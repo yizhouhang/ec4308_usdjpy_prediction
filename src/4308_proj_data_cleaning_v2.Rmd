@@ -1,0 +1,138 @@
+---
+title: "4308_proj_data_cleaning"
+output: html_document
+date: "2025-10-21"
+---
+
+```{r setup, include=FALSE, message = FALSE, warning=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+### install and read packages
+```{r install and read, messgae = FALSE, warning = FALSE}
+# packages
+pkgs = c("readr", "dplyr", "tidyr", "ggplot2", "tibble", "lubridate")
+to_install = pkgs[!pkgs %in% installed.packages()[,1]]
+if (length(to_install)) install.packages(to_install, repos = "https://cloud.r-project.org")
+invisible(lapply(pkgs, library, character.only = TRUE))
+remotes::install_github("cykbennie/fbi")
+```
+
+## USA
+### read file
+```{r}
+library(fbi)
+fred = fredmd(file = "../data/fred_md_092025.csv", transform = TRUE)
+#fred_raw = fredmd(file = "../data/fred_md_092025.csv", transform = FALSE)
+```
+
+### check fred data
+```{r}
+names(fred)
+```
+
+```{r}
+head(fred, 10)
+```
+
+### get rid of initial few rows of NAs caused by differencing
+```{r}
+library(tidyr)
+library(dplyr)
+fred_aligned = fred[seq_len(nrow(fred)) > 2, , drop = FALSE]
+```
+
+### export
+```{r}
+write.csv(fred_aligned, "../data/fred_md_092025_trans.csv", row.names = FALSE)
+```
+
+## JP
+### read file
+```{r}
+jp = read_csv(file = "../data/jp2212.csv")
+jp = dplyr::rename(jp, date = 1)
+```
+
+### change data type of date column
+```{r}
+year = floor(jp$date)
+month = as.integer(round((jp$date - year) * 100))
+jp$date = as.Date(sprintf("%d-%02d-01", year, month))
+write.csv(jp, "../data/jp2212_trans.csv", row.names = FALSE)
+```
+
+### join all the predictors
+```{r}
+jp = as.data.frame(jp)
+fred_aligned = as.data.frame(fred_aligned)
+joined = left_join(jp, fred_aligned, by = "date")
+write.csv(joined, "../data/all_predictors_trans.csv", row.names = FALSE)
+```
+
+
+### check stationarity and further transformations on non-stationary data
+```{r}
+all = read_csv(file = "../data/all_predictors_trans.csv")
+
+# columns to test (skip date)
+vars2 <- setdiff(names(all), "date")
+
+# helper functions for ADF and KPSS tests
+adf_p <- function(x) {
+  x <- stats::na.omit(as.numeric(x))
+  if (length(x) < 10 || stats::var(x) == 0) return(NA_real_)
+  tryCatch(tseries::adf.test(x)$p.value, error = function(e) NA_real_)
+}
+
+kpss_p <- function(x) {
+  x <- stats::na.omit(as.numeric(x))
+  if (length(x) < 10 || stats::var(x) == 0) return(NA_real_)
+  tryCatch(tseries::kpss.test(x, null = "Level")$p.value, error = function(e) NA_real_)
+}
+
+adf_results <- data.frame(
+  series = vars2,
+  adf_p  = sapply(all[vars2], adf_p),
+  row.names = NULL
+)
+
+# those that fail ADF test (p >= 0.05)
+non_adf_stationary <- adf_results$series[adf_results$adf_p >= 0.05]
+
+cat("Non-stationary series detected:\n")
+print(non_adf_stationary)
+
+# difference non-stationary columns
+all_diff <- all
+for (col in non_adf_stationary) {
+  all_diff[[col]] <- c(NA, diff(all[[col]]))
+}
+
+# re-test ADF and KPSS after differencing 
+diff_res <- data.frame(
+  series = non_adf_stationary,
+  adf_p  = sapply(all_diff[non_adf_stationary], adf_p),
+  kpss_p = sapply(all_diff[non_adf_stationary], kpss_p),
+  row.names = NULL
+)
+
+# decisions (α = 0.05): ADF reject => stationary; KPSS not-reject => stationary
+diff_res$adf_stationary  <- diff_res$adf_p  < 0.05
+diff_res$kpss_stationary <- diff_res$kpss_p > 0.05
+
+cat("\nAfter differencing:\n")
+print(diff_res)
+
+# save to CSV
+# write.csv(all_diff, "../data/all_second_trans.csv", row.names = FALSE)
+```
+
+
+
+
+
+
+
+
+

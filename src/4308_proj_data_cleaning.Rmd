@@ -1,0 +1,166 @@
+---
+title: "4308_proj_data_cleaning"
+output: html_document
+date: "2025-10-21"
+---
+
+```{r setup, include=FALSE, message = FALSE, warning=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+### install and read packages
+```{r install and read, messgae = FALSE, warning = FALSE}
+# packages
+pkgs = c("readr", "dplyr", "tidyr", "ggplot2", "tibble", "lubridate")
+to_install = pkgs[!pkgs %in% installed.packages()[,1]]
+if (length(to_install)) install.packages(to_install, repos = "https://cloud.r-project.org")
+invisible(lapply(pkgs, library, character.only = TRUE))
+remotes::install_github("cykbennie/fbi")
+```
+
+## USA
+### read file
+```{r}
+library(fbi)
+fred = fredmd(file = "../data/fred_md_092025.csv", transform = TRUE)
+```
+
+### check fred data
+```{r}
+names(fred)
+```
+
+```{r}
+head(fred, 10)
+```
+
+### get rid of initial few rows of NAs caused by differencing
+```{r}
+library(tidyr)
+library(dplyr)
+fred_aligned = fred[seq_len(nrow(fred)) > 2, , drop = FALSE]
+```
+
+### export
+```{r}
+write.csv(fred_aligned, "../data/fred_md_092025_trans.csv", row.names = FALSE)
+```
+
+## JP
+### read file
+```{r}
+jp = read_csv(file = "../data/jp2212.csv")
+jp = dplyr::rename(jp, date = 1)
+```
+
+### change data type
+```{r}
+year = floor(jp$date)
+month = as.integer(round((jp$date - year) * 100))
+jp$date = as.Date(sprintf("%d-%02d-01", year, month))
+write.csv(jp, "../data/jp2212_trans.csv", row.names = FALSE)
+```
+
+### join all the predictors
+```{r}
+jp = as.data.frame(jp)
+fred_aligned = as.data.frame(fred_aligned)
+joined = left_join(jp, fred_aligned, by = "date")
+write.csv(joined, "../data/all_predictors_trans.csv", row.names = FALSE)
+```
+
+
+### check stationarity of the fred md non-transformed columns
+```{r}
+# install once if needed
+if (!requireNamespace("tseries", quietly = TRUE)) install.packages("tseries")
+if (!requireNamespace("urca", quietly = TRUE))    install.packages("urca")
+library(tseries)
+
+# columns to test (skip date)
+vars <- setdiff(names(fred_aligned), "date")
+
+adf_p <- function(x) {
+  x <- stats::na.omit(as.numeric(x))
+  if (length(x) < 10 || stats::var(x) == 0) return(NA_real_)
+  tryCatch(tseries::adf.test(x)$p.value, error = function(e) NA_real_)
+}
+
+kpss_p <- function(x) {
+  x <- stats::na.omit(as.numeric(x))
+  if (length(x) < 10 || stats::var(x) == 0) return(NA_real_)
+  tryCatch(tseries::kpss.test(x, null = "Level")$p.value, error = function(e) NA_real_)
+}
+
+res <- data.frame(
+  series = vars,
+  adf_p  = sapply(fred_aligned[vars], adf_p),
+  kpss_p = sapply(fred_aligned[vars], kpss_p),
+  row.names = NULL
+)
+
+# decisions (α = 0.05): ADF reject => stationary; KPSS not-reject => stationary
+res$adf_stationary  = res$adf_p  < 0.05
+res$kpss_stationary = res$kpss_p > 0.05
+
+# optional: save
+# write.csv(res, "output/jp_stationarity_tests.csv", row.names = FALSE)
+
+res[order(is.na(res$adf_p), res$adf_p), ]  # quick view
+
+
+```
+
+```{r}
+# install once if needed
+if (!requireNamespace("tseries", quietly = TRUE)) install.packages("tseries")
+if (!requireNamespace("urca", quietly = TRUE))    install.packages("urca")
+library(tseries)
+
+# columns to test (skip date)
+vars <- setdiff(names(jp), "date")
+
+adf_p <- function(x) {
+  x <- stats::na.omit(as.numeric(x))
+  if (length(x) < 10 || stats::var(x) == 0) return(NA_real_)
+  tryCatch(tseries::adf.test(x)$p.value, error = function(e) NA_real_)
+}
+
+kpss_p <- function(x) {
+  x <- stats::na.omit(as.numeric(x))
+  if (length(x) < 10 || stats::var(x) == 0) return(NA_real_)
+  tryCatch(tseries::kpss.test(x, null = "Level")$p.value, error = function(e) NA_real_)
+}
+
+res <- data.frame(
+  series = vars,
+  adf_p  = sapply(jp[vars], adf_p),
+  kpss_p = sapply(jp[vars], kpss_p),
+  row.names = NULL
+)
+
+# decisions (α = 0.05): ADF reject => stationary; KPSS not-reject => stationary
+res$adf_stationary  = res$adf_p  < 0.05
+res$kpss_stationary = res$kpss_p > 0.05
+
+# optional: save
+# write.csv(res, "output/jp_stationarity_tests.csv", row.names = FALSE)
+
+res[order(is.na(res$adf_p), res$adf_p), ]  # quick view
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

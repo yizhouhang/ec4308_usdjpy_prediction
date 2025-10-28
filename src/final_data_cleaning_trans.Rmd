@@ -1,0 +1,68 @@
+---
+title: "lagging variables"
+output: html_document
+date: "2025-10-28"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library (tidyverse)
+setwd("/Users/yizhouhang/Documents/Y4S1/EC4308/ec4308 project/src")
+```
+
+## X variables
+```{r}
+df <- read_csv("../data/all_predictors_trans_v2.csv", show_col_types = FALSE)
+df <- df %>% slice(-1) #removes first row as after differencing some columns are NA
+view(df)
+```
+
+### drop columns and backfill NA
+```{r}
+# show columns with NA
+names(df)[colSums(is.na(df)) > 0]
+#drop columns with insufficient data 1. ACOGNO (New orders for consumer good) 2. UMCSENTx (consumer sentiment)
+#df <- df %>% select(-ACOGNO, -UMCSENTx)
+df <- df %>% fill(everything(), .direction = "up") #fill the missing 2 values from CP3Mx and COMPAPFFx with backfill
+df_clean <- df %>% select(-x219) #drop duplicated exchange_rate
+df_clean <- df_clean %>%
+  rename(USDJPY_logreturn = EXJPUSx)
+df_clean <- df_clean %>%
+  relocate(USDJPY_logreturn, .after = date)
+df_clean
+```
+###lagging according to forecast horizons
+```{r}
+
+```
+
+## Double check Y variable
+### clean
+```{r}
+raw_fred <- read_csv("../data/fred_md_092025.csv", show_col_types = FALSE)
+usdjpy_rate <- raw_fred %>% select(sasdate,EXJPUSx)
+usdjpy_rate <- usdjpy_rate %>%
+  mutate(
+    sasdate = as.Date(sasdate, format = "%m/%d/%Y")
+  ) %>%
+  filter(sasdate >= as.Date("1974-01-01"))
+usdjpy_rate
+```
+### calculate log_returns
+```{r}
+usdjpy_rate <- usdjpy_rate %>%
+  arrange(sasdate) %>%  
+  mutate(log_return = log(EXJPUSx) - log(lag(EXJPUSx)))
+usdjpy_rate <- usdjpy_rate %>%
+  filter(!is.na(log_return))
+usdjpy_rate
+```
+
+```{r}
+df %>%
+  select(x219,EXJPUSx)
+```
+
