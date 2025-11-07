@@ -1,0 +1,177 @@
+---
+title: "regression"
+output: html_document
+date: "2025-11-06"
+---
+### Packages needed
+```{r}
+#install.packages("remotes")
+#remotes::install_github("gabrielrvsc/HDeconometrics")
+library(HDeconometrics)
+library(sandwich) 
+library(hdm)
+library(tidyverse)
+```
+### Load the files
+```{r}
+setwd("/Users/yizhouhang/Documents/Y4S1/EC4308/ec4308 project/src")
+df_1m <- read_csv("../data/lag1m.csv", show_col_types = FALSE)
+df_3m <- read_csv("../data/lag3m.csv", show_col_types = FALSE)
+df_6m <- read_csv("../data/lag6m.csv", show_col_types = FALSE)
+df_12m <- read_csv("../data/lag12m.csv", show_col_types = FALSE)
+```
+
+
+```{r}
+clean <- df_1m
+```
+
+### Train Test Split
+```{r}
+##time-based split: test is >= 2012-01-01 
+split_date <- as.Date("2012-01-01")
+is_test  <- clean$date >= split_date
+is_train <- !is_test
+
+y <- clean$USDJPY_logreturn
+X <- clean %>% select(-date, -USDJPY_logreturn) %>% as.matrix()
+
+X_tr <- X[is_train, , drop = FALSE]
+y_tr <- y[is_train]
+X_te <- X[is_test,  , drop = FALSE]
+y_te <- y[is_test]
+```
+
+### Standardization
+```{r}
+train_center <- colMeans(X_tr)
+train_scale  <- apply(X_tr, 2, sd)
+
+# drop zero-variance columns 
+zv <- which(is.na(train_scale) | train_scale == 0)
+if (length(zv) > 0) {
+  X_tr <- X_tr[, -zv, drop = FALSE]
+  X_te <- X_te[, -zv, drop = FALSE]
+  train_center <- train_center[-zv]
+  train_scale  <- train_scale[-zv]
+}
+
+scale_with <- function(M, center, scale) {
+  sweep(sweep(M, 2, center, "-"), 2, scale, "/")
+}
+
+X_tr_s <- scale_with(X_tr, train_center, train_scale)
+X_te_s <- scale_with(X_te, train_center, train_scale)
+
+```
+
+```{r}
+rsq <- function(pred, y) 1 - sum((y - pred)^2) / sum((y - mean(y))^2)
+rmse <- function(p, t) sqrt(mean((t - p)^2))
+
+top_coefs <- function(beta, k = 20) {
+  beta <- beta[!is.na(beta)]
+  ord <- order(abs(beta), decreasing = TRUE)
+  head(beta[ord], k)
+}
+
+```
+
+### OLS Summary
+```{r}
+ols_quick_summary <- function(fit, X_te_s, y_tr, y_te) {
+  s   <- summary(fit)
+  n   <- length(y_tr)
+  p   <- length(coef(fit)) - 1
+  aic <- AIC(fit); bic <- BIC(fit); ll <- as.numeric(logLik(fit))
+
+  rmse <- function(p, t) sqrt(mean((t - p)^2))
+  r2   <- function(p, y) 1 - sum((y - p)^2) / sum((y - mean(y))^2)
+
+  pred_tr <- as.numeric(fitted(fit))
+  pred_te <- as.numeric(cbind(1, X_te_s) %*% coef(fit))
+
+  cat("\n=== OLS (compact) ===\n")
+  cat(sprintf("n = %d, p = %d\n", n, p))
+  cat(sprintf("R^2 (train) = %.3f   Adj R^2 = %.3f   Residual SE = %.5f\n",
+              s$r.squared, s$adj.r.squared, s$sigma))
+  cat(sprintf("F-stat = %.3f (p = %.4g)\n",
+              s$fstatistic[1],
+              pf(s$fstatistic[1], s$fstatistic[2], s$fstatistic[3], lower.tail = FALSE)))
+  cat(sprintf("AIC = %.1f   BIC = %.1f   LogLik = %.1f\n", aic, bic, ll))
+  cat(sprintf("Train: RMSE = %.5f   R^2 = %.3f\n", rmse(pred_tr, y_tr), r2(pred_tr, y_tr)))
+  cat(sprintf("Test : RMSE = %.5f   R^2 = %.3f\n",  rmse(pred_te, y_te), r2(pred_te, y_te)))
+  invisible(list(
+    n = n, p = p,
+    r2_train = s$r.squared, adjr2 = s$adj.r.squared, sigma = s$sigma,
+    f_stat = unname(s$fstatistic[1]),
+    f_df1 = unname(s$fstatistic[2]), f_df2 = unname(s$fstatistic[3]),
+    f_p = pf(s$fstatistic[1], s$fstatistic[2], s$fstatistic[3], lower.tail = FALSE),
+    AIC = aic, BIC = bic, LogLik = ll,
+    rmse_train = rmse(pred_tr, y_tr), r2_train_perf = r2(pred_tr, y_tr),
+    rmse_test  = rmse(pred_te, y_te), r2_test_perf  = r2(pred_te, y_te)
+  ))
+}
+
+# Fit OLS only if p < n in training 
+if (ncol(X_tr_s) < nrow(X_tr_s)) {
+  fit_ols <- lm(y_tr ~ ., data = data.frame(y_tr, X_tr_s))
+  ols_quick_summary(fit_ols, X_te_s, y_tr, y_te)
+} else {
+  cat("OLS skipped (p >= n in training). Use Post-LASSO or Ridge/EN instead.\n")
+}
+
+```
+
+```{r}
+df_3m
+```
+
+```{r}
+## --- 4) Penalized models with IC-selected lambda (no double-standardizing) ---
+# LASSO (alpha = 1)
+fit_lasso <- ic.glmnet(X_tr_s, y_tr, family = "gaussian", alpha = 1, standardize = FALSE)
+pred_lasso <- as.numeric(predict(fit_lasso, newx = X_te_s))
+rmse_lasso <- rmse(pred_lasso, y_te)
+
+# Ridge (alpha = 0)
+fit_ridge <- ic.glmnet(X_tr_s, y_tr, family = "gaussian", alpha = 0, standardize = FALSE)
+pred_ridge <- as.numeric(predict(fit_ridge, newx = X_te_s))
+rmse_ridge <- rmse(pred_ridge, y_te)
+
+# Elastic Net (try alpha = 0.5 for a start)
+alpha_en <- 0.5
+fit_en <- ic.glmnet(X_tr_s, y_tr, family = "gaussian", alpha = alpha_en, standardize = FALSE)
+pred_en <- as.numeric(predict(fit_en, newx = X_te_s))
+rmse_en <- rmse(pred_en, y_te)
+
+## --- 5) Post-LASSO (OLS on variables selected by LASSO) ---
+sel <- which(coef(fit_lasso)[-1] != 0)  # indices of nonzero features (drop intercept)
+rmse_post <- NA_real_
+if (length(sel) > 0 && length(sel) < nrow(X_tr_s)) {
+  fit_post <- lm(y_tr ~ ., data = data.frame(y_tr, X_tr_s[, sel, drop = FALSE]))
+  pred_post <- as.numeric(cbind(1, X_te_s[, sel, drop = FALSE]) %*% coef(fit_post))
+  rmse_post <- rmse(pred_post, y_te)
+}
+
+## --- 6) Random-walk (returns) baseline: predict 0 ---
+pred_rw <- rep(0, length(y_te))
+rmse_rw <- rmse(pred_rw, y_te)
+
+## --- 7) Compare ---
+out <- c(
+  Test_start = as.numeric(min(clean$date[is_test])),
+  n_train = sum(is_train),
+  n_test = sum(is_test),
+  RMSE_RW = rmse_rw,
+  RMSE_OLS = rmse_ols,
+  RMSE_LASSO = rmse_lasso,
+  RMSE_Ridge = rmse_ridge,
+  RMSE_EN_0_5 = rmse_en,
+  RMSE_PostLASSO = rmse_post
+)
+print(out)
+
+```
+
+
