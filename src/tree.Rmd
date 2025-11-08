@@ -1,0 +1,245 @@
+---
+title: "tree"
+output: html_document
+date: "2025-11-06"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+# load packages
+# install.packages("randomForest")
+# install.packages("gbm")
+library(randomForest)  # bagging & random forest
+library(gbm)           # boosting
+```
+
+```{r}
+# setwd("/Users/judy/Desktop/EC4308/ec4308_usdjpy_prediction/src")
+
+# read datasets (different horizons)
+lag1m = read.csv("../data/df_1m_lag.csv")
+lag3m = read.csv("../data/df_3m_lag.csv")
+lag6m = read.csv("../data/df_6m_new.csv")
+lag12m = read.csv("../data/df_12m_new.csv")
+
+for (d in c("lag1m", "lag3m", "lag6m", "lag12m")) {
+  df <- get(d)                  # retrieve the dataset by name
+  df[[1]] <- as.Date(df[[1]])   # convert first column to Date
+  df <- df[order(df$date), ]    # sort ascending
+  assign(d, df)                 # assign it back to the variable name
+}
+```
+
+# test for rf_rolling
+```{r}
+data <- lag1m 
+data_name <- deparse(substitute(data))
+window_size <- 120 # 10 years
+y_col <- 3
+
+y_all <- data[[y_col]]
+X_all <- data[, -c(1, 2, y_col), drop = FALSE]
+
+n <- nrow(data)
+nprev <- n - window_size  # nprev: number of out-of-sample forecasts (last nprev rows)
+
+preds <- rep(NA_real_, nprev)
+actual <- y_all[(window_size + 1):n]
+importance_list <- vector("list", nprev)
+
+cat("Rolling forecasts for", data_name, "started... total =", nprev, "steps\n")
+
+for (i in seq_len(nprev)) {
+    # define training window
+    start <- i
+    end <- i + window_size - 1
+    
+    X_train <- X_all[start:end, , drop = FALSE]
+    y_train <- y_all[start:end]
+    X_pred  <- X_all[end + 1, , drop = FALSE]
+    
+    # fit rf model
+    rf <- randomForest(x = X_train, y = y_train, importance = TRUE)
+    
+    # Forecast next observation
+    preds[i] <- predict(rf, X_pred)
+    importance_list[[i]] <- importance(rf)
+    
+    if (i %% 10 == 0 || i == nprev) {
+      cat("Iteration", i, "of", nprev, "done\n")
+    }
+  }
+```
+```{r}
+# evaluation
+rmse <- sqrt(mean((actual - preds)^2))
+mae  <- mean(abs(actual - preds))
+cat("Rolling RMSE:", round(rmse, 6), "| MAE:", round(mae, 6), "\n")
+
+results <- data.frame(
+  Date = data[(window_size + 1):n, 1],
+  Actual = actual,
+  Forecast = preds
+)
+
+# plot actual vs forecast
+plot(results$Date, results$Actual, type = "l", main = "Rolling RF Forecast vs Actual",
+     ylab = "Y", xlab = "Date")
+lines(results$Date, results$Forecast, col = "red")
+legend("topleft", legend = c("Actual", "Forecast"),
+       col = c("black", "red"), lty = 1)
+
+
+```
+
+# Random Forest
+```{r}
+rolling_rf_rmse <- function(data, window_size=120, y_col = 3) {
+  data_name <- deparse(substitute(data))
+  
+  y_all <- data[[y_col]]
+  X_all <- data[, -c(1, 2, y_col), drop = FALSE]
+  
+  n <- nrow(data)
+  nprev <- n - window_size  # nprev: number of out-of-sample forecasts (last nprev rows)
+  
+  preds <- rep(NA_real_, nprev)
+  actual <- y_all[(window_size + 1):n]
+  importance_list <- vector("list", nprev)
+  
+  cat("Rolling forecasts for", data_name, "started... total =", nprev, "steps\n")
+
+  for (i in seq_len(nprev)) {
+      # define training window
+      start <- i
+      end <- i + window_size - 1
+      
+      X_train <- X_all[start:end, , drop = FALSE]
+      y_train <- y_all[start:end]
+      X_pred  <- X_all[end + 1, , drop = FALSE]
+      
+      # fit rf model
+      rf <- randomForest(x = X_train, y = y_train, importance = TRUE)
+      
+      # Forecast next observation
+      preds[i] <- predict(rf, X_pred)
+      importance_list[[i]] <- importance(rf)
+      
+      if (i %% 10 == 0 || i == nprev) {
+        cat("Iteration", i, "of", nprev, "done\n")
+      }
+  }
+  
+  # evaluation
+  rmse <- sqrt(mean((actual - preds)^2))
+  mae  <- mean(abs(actual - preds))
+  cat("Rolling RMSE:", round(rmse, 6), "| MAE:", round(mae, 6), "\n")
+  
+  results <- data.frame(
+    Date = data[(window_size + 1):n, 1],
+    Actual = actual,
+    Forecast = preds
+  )
+  
+  # plot actual vs forecast
+  plot(results$Date, results$Actual, type = "l", main = "Rolling RF Forecast vs Actual",
+       ylab = "Y", xlab = "Date")
+  lines(results$Date, results$Forecast, col = "red")
+  legend("topleft", legend = c("Actual", "Forecast"),
+         col = c("black", "red"), lty = 1)
+}
+
+```
+
+
+```{r}
+# rolling-window forecasts at different horizons
+rf_1m <- rolling_rf_rmse(data=lag1m)
+rf_3m <- rolling_rf_rmse(data=lag3m)
+rf_6m <- rolling_rf_rmse(data=lag6m)
+rf_12m <- rolling_rf_rmse(data=lag12m)
+```
+
+
+# Bagging
+```{r}
+rolling_bag_rmse <- function(data, window_size=120, y_col = 3) {
+  data_name <- deparse(substitute(data))
+  
+  y_all <- data[[y_col]]
+  X_all <- data[, -c(1, 2, y_col), drop = FALSE]
+  
+  n <- nrow(data)
+  nprev <- n - window_size  # nprev: number of out-of-sample forecasts (last nprev rows)
+  
+  preds <- rep(NA_real_, nprev)
+  actual <- y_all[(window_size + 1):n]
+  importance_list <- vector("list", nprev)
+  
+  cat("Rolling forecasts for", data_name, "started... total =", nprev, "steps\n")
+
+  for (i in seq_len(nprev)) {
+      # define training window
+      start <- i
+      end <- i + window_size - 1
+      
+      X_train <- X_all[start:end, , drop = FALSE]
+      y_train <- y_all[start:end]
+      X_pred  <- X_all[end + 1, , drop = FALSE]
+      
+      # fit rf model
+      rf <- randomForest(x = X_train, y = y_train, mtry = ncol(X_train), importance = TRUE)
+      
+      # Forecast next observation
+      preds[i] <- predict(rf, X_pred)
+      importance_list[[i]] <- importance(rf)
+      
+      if (i %% 10 == 0 || i == nprev) {
+        cat("Iteration", i, "of", nprev, "done\n")
+      }
+  }
+  
+  # evaluation
+  rmse <- sqrt(mean((actual - preds)^2))
+  mae  <- mean(abs(actual - preds))
+  cat("Rolling RMSE:", round(rmse, 6), "| MAE:", round(mae, 6), "\n")
+  
+  results <- data.frame(
+    Date = data[(window_size + 1):n, 1],
+    Actual = actual,
+    Forecast = preds
+  )
+  
+  # plot actual vs forecast
+  plot(results$Date, results$Actual, type = "l", main = "Rolling RF Forecast vs Actual",
+       ylab = "Y", xlab = "Date")
+  lines(results$Date, results$Forecast, col = "red")
+  legend("topleft", legend = c("Actual", "Forecast"),
+         col = c("black", "red"), lty = 1)
+}
+
+```
+
+```{r}
+bag_1m  <- rolling_bag_rmse(data=lag1m)
+bag_3m  <- rolling_bag_rmse(data=lag3m)
+bag_6m  <- rolling_bag_rmse(data=lag6m)
+bag_12m <- rolling_bag_rmse(data=lag12m)
+```
+
+```{r}
+
+```
+
+
+```{r}
+
+```
+
+
+
+
+
