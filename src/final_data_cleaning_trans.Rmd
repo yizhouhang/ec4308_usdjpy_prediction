@@ -51,36 +51,36 @@ usdjpy_rate
 all_rets <- usdjpy_rate %>%
   arrange(sasdate) %>%
   mutate(
-    log_return_1m  = log(lead(EXJPUSx,  1)) - log(EXJPUSx),
-    log_return_3m  = log(lead(EXJPUSx,  3)) - log(EXJPUSx),
-    log_return_6m  = log(lead(EXJPUSx,  6)) - log(EXJPUSx),
-    log_return_12m = log(lead(EXJPUSx, 12)) - log(EXJPUSx)
+    Y_log_return_1m  = log(lead(EXJPUSx,  1)) - log(EXJPUSx),
+    Y_log_return_3m  = log(lead(EXJPUSx,  3)) - log(EXJPUSx),
+    Y_log_return_6m  = log(lead(EXJPUSx,  6)) - log(EXJPUSx),
+    Y_log_return_12m = log(lead(EXJPUSx, 12)) - log(EXJPUSx)
   ) %>%
   rename(date = sasdate)
 
 returns_1m <- all_rets %>%
-  select(date, EXJPUSx, log_return_1m) %>%
-  tidyr::drop_na(log_return_1m)
+  select(date, EXJPUSx, Y_log_return_1m) %>%
+  tidyr::drop_na(Y_log_return_1m)
 
 returns_3m <- all_rets %>%
-  select(date, EXJPUSx, log_return_3m) %>%
-  tidyr::drop_na(log_return_3m)
+  select(date, EXJPUSx, Y_log_return_3m) %>%
+  tidyr::drop_na(Y_log_return_3m)
 
 returns_6m <- all_rets %>%
-  select(date, EXJPUSx, log_return_6m) %>%
-  tidyr::drop_na(log_return_6m)
+  select(date, EXJPUSx, Y_log_return_6m) %>%
+  tidyr::drop_na(Y_log_return_6m)
 
 returns_12m <- all_rets %>%
-  select(date, EXJPUSx, log_return_12m) %>%
-  tidyr::drop_na(log_return_12m)
+  select(date, EXJPUSx, Y_log_return_12m) %>%
+  tidyr::drop_na(Y_log_return_12m)
 ```
 
 ### Merge with X variables
 ```{r}
 df_1m  <- returns_1m  %>% left_join(df_clean, by = "date") %>% slice(-1)
-df_3m  <- returns_3m  %>% left_join(df_clean, by = "date")%>% slice(-1)
-df_6m  <- returns_6m  %>% left_join(df_clean, by = "date")%>% slice(-1)
-df_12m <- returns_12m %>% left_join(df_clean, by = "date")%>% slice(-1)
+df_3m  <- returns_3m  %>% left_join(df_clean, by = "date") %>% slice(-1)
+df_6m  <- returns_6m  %>% left_join(df_clean, by = "date") %>% slice(-1)
+df_12m <- returns_12m %>% left_join(df_clean, by = "date") %>% slice(-1)
 ```
 
 
@@ -114,10 +114,31 @@ r1m_with_date <- usdjpy_rate %>%
   arrange(sasdate) %>%
   mutate(r = log(EXJPUSx) - log(lag(EXJPUSx))) %>%
   filter(!is.na(r)) %>% rename(monthly_return_lag1 = r) %>% rename(date = sasdate) %>% select(-EXJPUSx)
-df_1m_lag  <- df_1m  %>% left_join(r1m_with_date, by = "date") %>% filter (date <= '2022-12-01')
-df_3m_lag  <- df_3m  %>% left_join(r1m_with_date, by = "date") %>% filter (date <= '2022-12-01')
-df_6m_lag  <- df_6m  %>% left_join(r1m_with_date, by = "date") %>% filter (date <= '2022-12-01')
-df_12m_lag <- df_12m  %>% left_join(r1m_with_date, by = "date") %>% filter (date <= '2022-12-01')
+
+prep_h <- function(df, h) {
+  df %>%
+    arrange(date) %>%
+    rename(current_fx_level = EXJPUSx.x) %>%
+    mutate(
+      fx_level_fwd_1m  = lead(current_fx_level,  1),
+      fx_level_fwd_3m  = lead(current_fx_level,  3),
+      fx_level_fwd_6m  = lead(current_fx_level,  6),
+      fx_level_fwd_12m = lead(current_fx_level, 12),
+      fx_level_fwd = c(NA, fx_level_fwd_1m, fx_level_fwd_3m, fx_level_fwd_6m, fx_level_fwd_12m)[
+        match(h, c(NA,1,3,6,12))
+      ]
+    )
+}
+
+df_1m  <- prep_h(df_1m, 1)
+df_3m  <- prep_h(df_3m, 3)
+df_6m  <- prep_h(df_6m, 6)
+df_12m <- prep_h(df_12m, 12)
+
+df_1m_lag  <- df_1m  %>% left_join(r1m_with_date, by = "date") %>% filter (date <= '2022-12-01') %>% relocate(monthly_return_lag1, .before = x1) %>% relocate(fx_level_fwd_1m, .after = current_fx_level)
+df_3m_lag  <- df_3m  %>% left_join(r1m_with_date, by = "date") %>% filter (date <= '2022-12-01') %>% relocate(monthly_return_lag1, .before = x1) %>% relocate(fx_level_fwd_3m, .after = current_fx_level)
+df_6m_lag  <- df_6m  %>% left_join(r1m_with_date, by = "date") %>% filter (date <= '2022-12-01') %>% relocate(monthly_return_lag1, .before = x1) %>% relocate(fx_level_fwd_6m, .after = current_fx_level)
+df_12m_lag <- df_12m  %>% left_join(r1m_with_date, by = "date") %>% filter (date <= '2022-12-01') %>% relocate(monthly_return_lag1, .before = x1) %>% relocate(fx_level_fwd_12m, .after = current_fx_level)
 ```
 
 
