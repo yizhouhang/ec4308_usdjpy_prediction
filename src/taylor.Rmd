@@ -1,0 +1,248 @@
+---
+title: "4308_proj_taylor"
+author: "Erica"
+date: "2025-11-05"
+output: html_document
+---
+
+```{r}
+# ---- packages ----
+library (readr)
+library (dplyr)
+library (lubridate)
+library (stringr)
+```
+
+#### Inflation Rate
+```{r}
+# ---- helper: YoY log change from level CPI ---
+yoy_log = function(x, lag_n = 12) {
+  log(x) - dplyr::lag(log(x), lag_n)
+}
+
+# ---- US inflation rate ----
+us_path = '../data/cpi_us_fred_md_raw.csv'
+us_raw = read_csv(us_path, show_col_types = FALSE)
+us_raw = us_raw %>% filter(date >= '1974-01-01')
+us = us_raw %>% mutate(pi_us = yoy_log(CPIAUCSL)) %>%
+  filter(!is.na(pi_us))
+
+# ---- JP inflation rate ----
+jp_path = '../data/cpi_jp_self_sourced.csv'
+jp_raw = read_csv(jp_path, show_col_types = FALSE)
+jp_raw = jp_raw %>% filter(date >= '1974-01-01')
+jp = jp_raw %>% mutate(pi_jp = yoy_log(cpijp)) %>%
+  filter(!is.na(pi_jp))
+```
+
+#### Output Gap (one-sided HP) from Industrial Production
+
+```{r}
+library(KFAS)
+
+# ---- helper function ----
+one_sided_hp_gap <- function(x, lambda = 14400, log_transform = TRUE){
+  v <- as.numeric(x); if (log_transform){ v[v<=0] <- NA; v <- log(v) }
+  kf <- KFS(SSModel(v ~ SSMtrend(2, Q=list(0, 1/lambda)), H=1),
+            filtering="state", smoothing="none")
+  trend <- as.numeric(kf$a[-1,1]); 100 * (v - trend)
+}
+
+# ---- US IP Gap ----
+us_ip_path = '../data/indpro_us_fred_md_raw.csv'
+us_ip_raw = read_csv(us_ip_path, show_col_types = FALSE)
+us_ip_raw = us_ip_raw %>% 
+  distinct(date, .keep_all = TRUE) %>%
+  filter(date >= '1974-01-01')
+
+us_gap <- us_ip_raw %>%
+  mutate(gap_us = one_sided_hp_gap(INDPRO, 14400)) %>%
+  select(date, gap_us)
+
+# ---- helper function to reconstruct the level data ----
+reconstruct_from_dlog <- function(dlog, base = 100) {
+  idx <- which(!is.na(dlog)); stopifnot(length(idx) > 0)
+  lvl <- rep(NA_real_, length(dlog))
+  lvl[idx] <- exp(log(base) + cumsum(replace(dlog[idx], is.na(dlog[idx]), 0)))
+  lvl
+}
+
+# ---- JP IP Gap ----
+jp_ip_path = '../data/iip_jp.csv'
+jp_ip_raw = read_csv(jp_ip_path, show_col_types = FALSE)
+jp_ip_raw = jp_ip_raw %>% filter (date >= '1974-01-01')
+jp_gap <- jp_ip_raw %>%
+  mutate(
+    iip_level = reconstruct_from_dlog(iipjp, base = 1),
+    gap_jp    = one_sided_hp_gap(iip_level, lambda = 14400) * 0.01
+  ) %>%
+  transmute(date, gap_jp)
+
+```
+
+#### policy/short rates
+```{r}
+# ---- US rate ----
+us_rate_path = '../data/fedfund_us.csv'
+us_rate_raw = read_csv(us_rate_path, show_col_types = FALSE) %>%
+  filter(date >= "1974-01-01") %>% 
+  mutate(i_us_l1 = dplyr::lag(FEDFUNDS, 1)) %>% select (date, i_us_l1)
+
+# ---- JP rate ----
+jp_rate_path = '../data/rate_jp.csv'
+jp_rate_raw = read_csv(jp_rate_path, show_col_types = FALSE) %>% 
+  filter (date >= '1974-01-01') %>%
+  mutate (i_jp_l1 = dplyr::lag(rate, 1)) %>%
+  select (date, i_jp_l1)
+```
+
+#### FX return target
+```{r}
+fx = read_csv('../data/exjpusx.csv', show_col_types = FALSE) %>%
+  filter(date >= '1974-01-01')
+```
+
+```{r}
+tr = fx %>% inner_join (us %>% select (date, pi_us), by = 'date') %>%
+  inner_join(jp %>% select(date, pi_jp), by = "date") %>%
+  inner_join(us_gap %>% select(date, gap_us), by = "date") %>%
+  inner_join(jp_gap %>% select(date, gap_jp), by = "date") %>%
+  inner_join(us_rate_raw, by = "date") %>%
+  inner_join(jp_rate_raw, by = "date") %>%
+  tidyr::drop_na() %>%
+  filter (date <= '2022-12-31')
+```
+
+```{r}
+train = tr %>% filter (date <= '2012-12-31')
+test = tr %>% filter (date > '2012-12-31')
+```
+
+```{r}
+fit_tr = lm(EXJPUSx ~ pi_us + pi_jp + gap_us + gap_jp + i_us_l1 + i_jp_l1,
+            data = train)
+test = test %>%
+  mutate(f_tr  = as.numeric(predict(fit_tr, newdata = cur_data())),
+    f_rw0 = 0)
+
+mse = function(y, yhat) mean((y - yhat)^2, na.rm = TRUE)
+
+mse_tr  <- mse(test$EXJPUSx, test$f_tr)
+mse_rw0 <- mse(test$EXJPUSx, test$f_rw0)
+```
+
+```{r}
+mse_tr
+```
+
+```{r}
+mse_rw0
+```
+
+#### test
+```{r}
+library(purrr)
+# --- prep base (join your regressors to r1) ---
+base = fx %>%                                   # columns: date, r1 (Δlog s)
+  mutate(date = ymd(date)) %>%
+  filter(date >= as.Date("1974-01-01")) %>%
+  inner_join(tr %>%
+               select(date, pi_us, pi_jp, gap_us, gap_jp, i_us_l1, i_jp_l1),
+             by = "date") %>%
+  arrange(date)
+
+build_target_from_r1 <- function(df, h){
+  df %>%
+    arrange(date) %>%
+    mutate(target = Reduce(`+`, lapply(1:h, function(k) dplyr::lead(EXJPUSx, k))))
+}
+
+cut_train <- as.Date("2012-12-31")
+cut_test  <- as.Date("2022-12-31")
+horizons  <- c(1,3,6,12)
+max_h     <- max(horizons)
+
+rmse <- function(y, yhat) sqrt(mean((y - yhat)^2, na.rm = TRUE))
+r2_test <- function(y, yhat){
+  sse <- sum((y - yhat)^2, na.rm = TRUE)
+  sst <- sum((y - mean(y, na.rm = TRUE))^2, na.rm = TRUE)
+  1 - sse/sst
+}
+
+results <- map_dfr(horizons, function(h){
+  dat_h <- build_target_from_r1(base, h) %>% 
+    tidyr::drop_na(target, pi_us, pi_jp, gap_us, gap_jp, i_us_l1, i_jp_l1)
+
+  # NO FUTURE IN TRAIN: last train label uses only data ≤ 2012-12
+  train_end_h <- cut_train %m-% months(h)
+  train_h <- dat_h %>% filter(date <= train_end_h)
+
+  # SAME TEST WINDOW FOR ALL h (intersection)
+  test_start <- as.Date("2013-01-01")
+  test_end   <- cut_test %m-% months(max_h)
+  test_h <- dat_h %>% filter(date >= test_start, date <= test_end)
+
+  fit <- lm(target ~ pi_us + pi_jp + gap_us + gap_jp + i_us_l1 + i_jp_l1, data = train_h)
+  test_h <- test_h %>% mutate(f_tr = as.numeric(predict(fit, newdata = cur_data())),
+                              f_rw0 = 0)
+
+  tibble(
+    h = h,
+    n_train = nrow(train_h), n_test = nrow(test_h),
+    train_end = max(train_h$date),
+    test_start = min(test_h$date), test_end = max(test_h$date),
+    rmse_tr  = rmse(test_h$target, test_h$f_tr),
+    rmse_rw0 = rmse(test_h$target, test_h$f_rw0),
+    rmse_diff = rmse(test_h$target, test_h$f_tr) - rmse(test_h$target, test_h$f_rw0),
+    rmse_ratio = rmse(test_h$target, test_h$f_tr) / rmse(test_h$target, test_h$f_rw0),
+    r2_test = r2_test(test_h$target, test_h$f_tr), 
+    r2_oos_rw0 = 1 - mse_tr/mse_rw0
+  )
+})
+
+results
+```
+
+#### Choose Lags
+```{r}
+fx_lag = read_csv("../data/exjpusx.csv", show_col_types = FALSE) %>%
+  mutate(date = ymd(date)) %>%
+  arrange(date) %>%
+  transmute(date, r1 = EXJPUSx)
+
+x_lag = fx_lag$r1
+par(mfrow = c(1,2))
+acf(x, na.action = na.omit, lag.max = 36, main = "ACF of r1")
+pacf(x, na.action = na.omit, lag.max = 36, main = "PACF of r1")
+par(mfrow = c(1,1))
+
+```
+
+```{r}
+x <- fx_lag$r1
+cor(x, dplyr::lag(x,1), use="pairwise.complete.obs")  # should be small for FX returns
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
