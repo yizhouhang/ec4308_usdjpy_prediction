@@ -10,6 +10,9 @@ knitr::opts_chunk$set(echo = TRUE)
 
 ```{r}
 library (tidyverse)
+library(dplyr)
+library(tidyr)
+library(purrr)
 setwd("/Users/yizhouhang/Documents/Y4S1/EC4308/ec4308 project/src")
 ```
 
@@ -27,19 +30,11 @@ names(df)[colSums(is.na(df)) > 0]
 #drop columns with insufficient data 1. ACOGNO (New orders for consumer good) 2. UMCSENTx (consumer sentiment)
 #df <- df %>% select(-ACOGNO, -UMCSENTx)
 df <- df %>% fill(everything(), .direction = "up") #fill the missing 2 values from CP3Mx and COMPAPFFx with backfill
-df_clean <- df %>% select(-x219) #drop duplicated exchange_rate
-df_clean <- df_clean %>%
-  rename(USDJPY_logreturn = EXJPUSx)
-df_clean <- df_clean %>%
-  relocate(USDJPY_logreturn, .after = date)
+df_clean <- df %>% select(-x219,EXJPUSx) #drop the exchange_rate columns
 df_clean
 ```
-###lagging according to forecast horizons
-```{r}
 
-```
-
-## Double check Y variable
+## Y variable
 ### clean
 ```{r}
 raw_fred <- read_csv("../data/fred_md_092025.csv", show_col_types = FALSE)
@@ -53,16 +48,140 @@ usdjpy_rate
 ```
 ### calculate log_returns
 ```{r}
+# Updated
+all_rets <- usdjpy_rate %>%
+  arrange(sasdate) %>%
+  mutate(
+    log_return_1m  = log(EXJPUSx) - log(lag(EXJPUSx, 1)),
+    log_return_3m  = log(EXJPUSx) - log(lag(EXJPUSx, 3)),
+    log_return_6m  = log(EXJPUSx) - log(lag(EXJPUSx, 6)),
+    log_return_12m = log(EXJPUSx) - log(lag(EXJPUSx, 12))
+  ) %>%
+  rename(date = sasdate)   
+
+returns_1m <- all_rets %>%
+  select(date, EXJPUSx, log_return_1m) %>%
+  tidyr::drop_na(log_return_1m)
+
+returns_3m <- all_rets %>%
+  select(date, EXJPUSx, log_return_3m) %>%
+  tidyr::drop_na(log_return_3m)
+
+returns_6m <- all_rets %>%
+  select(date, EXJPUSx, log_return_6m) %>%
+  tidyr::drop_na(log_return_6m)
+
+returns_12m <- all_rets %>%
+  select(date, EXJPUSx, log_return_12m) %>%
+  tidyr::drop_na(log_return_12m)
+```
+
+### Merge with X variables
+```{r}
+df_1m  <- returns_1m  %>% left_join(df_clean, by = "date")
+df_3m  <- returns_3m  %>% left_join(df_clean, by = "date")
+df_6m  <- returns_6m  %>% left_join(df_clean, by = "date")
+df_12m <- returns_12m %>% left_join(df_clean, by = "date")
+```
+
+```{r}
+# Keep only: date, EXJPUSx, target; add lagged predictors; drop originals
+lag_x_keep_base <- function(df, target_col, h) {
+  pred_cols <- setdiff(names(df), c("date", "EXJPUSx.x",target_col))
+
+  df %>%
+    arrange(date) %>%
+    mutate(
+      across(
+        all_of(pred_cols),
+        ~ dplyr::lag(.x, h),
+        .names = "{.col}_lag{h}"
+      )
+    ) %>%
+    select(date, "EXJPUSx.x", all_of(target_col), ends_with(paste0("_lag", h))) %>%
+    drop_na()  
+}
+
+```
+
+```{r}
+write.csv(df_1m_lag,  "df_1m_new.csv",  row.names = FALSE)
+write.csv(df_3m_lag,  "df_3m_new.csv",  row.names = FALSE)
+write.csv(df_6m_lag,  "df_6m_new.csv",  row.names = FALSE)
+write.csv(df_12m_lag, "df_12m_new.csv", row.names = FALSE)
+```
+
+### archives
+
+###lagging according to forecast horizons
+```{r}
+pred_cols <- setdiff(names(df_clean), c("date", "USDJPY_logreturn"))
+
+# create lagged versions for all predictors
+df_lagged <- df_clean %>%
+  arrange(date) %>%
+  mutate(
+    across(
+      all_of(pred_cols),
+      list(
+        lag1  = ~ lag(.x, 1),
+        lag3  = ~ lag(.x, 3),
+        lag6  = ~ lag(.x, 6),
+        lag12 = ~ lag(.x, 12)
+      )
+    )
+  ) %>%
+  drop_na()   # remove the first few rows with missing lags
+df_lagged
+```
+
+
+```{r}
+#past versions
+make_lagged_df <- function(df, h) {
+  pred_cols <- setdiff(names(df), c("date", "USDJPY_logreturn"))
+  df %>%
+    arrange(date) %>%
+    # create lagged versions
+    mutate(across(all_of(pred_cols), ~ lag(.x, h), .names = "{.col}_lag{h}")) %>%
+    # drop the original (contemporaneous) predictors
+    select(date, USDJPY_logreturn, ends_with(paste0("_lag", h))) %>%
+    drop_na() %>%
+    relocate(date, USDJPY_logreturn)  
+}
+horizons <- c(1, 3, 6, 12)
+
+lagged_dfs <- set_names(
+  map(horizons, ~ make_lagged_df(df_clean, .x)),
+  paste0("lag", horizons, "m")
+)
+
+
+df_lag1m  <- lagged_dfs$lag1m
+df_lag3m  <- lagged_dfs$lag3m
+df_lag6m  <- lagged_dfs$lag6m
+df_lag12m <- lagged_dfs$lag12m
+```
+
+```{r}
+# One period only
 usdjpy_rate <- usdjpy_rate %>%
   arrange(sasdate) %>%  
   mutate(log_return = log(EXJPUSx) - log(lag(EXJPUSx)))
 usdjpy_rate <- usdjpy_rate %>%
   filter(!is.na(log_return))
 usdjpy_rate
-```
 
-```{r}
 df %>%
   select(x219,EXJPUSx)
 ```
 
+```{r}
+#save csv
+walk2(
+  lagged_dfs,
+  names(lagged_dfs),
+  ~ write_csv(.x, paste0(.y, ".csv"))
+)
+
+```
