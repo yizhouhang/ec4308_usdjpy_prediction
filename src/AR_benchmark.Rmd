@@ -1,0 +1,71 @@
+---
+title: "AR benchmark"
+author: "Erica"
+date: "2025-11-08"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(readr)
+library(dplyr)
+
+df_1m <- read_csv("../data/df_1m_lag.csv", show_col_types = FALSE) %>%
+  select(date, Y_log_return_1m, monthly_return_lag1) %>%
+  arrange(date) %>%
+  filter(!is.na(Y_log_return_1m), !is.na(monthly_return_lag1))
+
+W <- 120
+Lmax <- floor(12 * (Tn/100)^(1/4))
+# Fit AR(p) for p = 0..Lmax; compute BIC = AIC with k = log(T)
+r1m <- df_1m %>% pull(Y_log_return_1m)
+bic_tbl <- lapply(0:Lmax, function(p) {
+  fit <- arima(r1m, order = c(p, 0, 0), include.mean = TRUE, method = "ML")
+  data.frame(p = p,
+             BIC = AIC(fit, k = log(Tn)),
+             sigma2 = fit$sigma2)
+}) %>% bind_rows()
+p_star <- bic_tbl$p[which.min(bic_tbl$BIC)]
+# p = 1
+n <- nrow(df_1m)
+yhat_ar1 <- rep(NA_real_, n)
+yhat_rw0 <- rep(0, n)
+for (i in seq_len(n)) {
+  tr_end   <- i - 1
+  if (tr_end < 1) next
+  tr_start <- max(1, tr_end - W + 1)     # last W labeled rows
+  if ((tr_end - tr_start + 1) < 12) next # minimal sample guard
+
+  fit <- lm(Y_log_return_1m ~ monthly_return_lag1,
+            data = df_1m[tr_start:tr_end, ])
+  yhat_ar1[i] <- predict(fit, newdata = df_1m[i, , drop = FALSE])
+}
+
+oos <- df_1m %>%
+  mutate(yhat_ar1 = yhat_ar1,
+         yhat_rw0 = yhat_rw0) %>%
+  filter(!is.na(yhat_ar1))               # keep only dates with an AR(1) forecast
+
+rmse <- function(e) sqrt(mean(e^2))
+e_ar1 <- oos$Y_log_return_1m - oos$yhat_ar1
+e_rw0 <- oos$Y_log_return_1m - oos$yhat_rw0
+
+summary_tbl <- tibble::tibble(
+  horizon    = "1m",
+  n_oos      = nrow(oos),
+  RMSE_AR1   = rmse(e_ar1),
+  RMSE_RW0   = rmse(e_rw0),
+  R2_OOS     = 1 - sum(e_ar1^2) / sum(e_rw0^2)
+)
+
+print(summary_tbl)
+head(oos, 5)   # peek at first few OOS predictions
+
+# Optional: save OOS forecasts/errors
+# readr::write_csv(oos, "../data/oos_ar1_1m.csv")
+
+```
+
