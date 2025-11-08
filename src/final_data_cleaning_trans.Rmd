@@ -13,7 +13,7 @@ library (tidyverse)
 library(dplyr)
 library(tidyr)
 library(purrr)
-setwd("/Users/yizhouhang/Documents/Y4S1/EC4308/ec4308 project/src")
+#setwd("/Users/yizhouhang/Documents/Y4S1/EC4308/ec4308 project/src")
 ```
 
 ## X variables
@@ -48,16 +48,15 @@ usdjpy_rate
 ```
 ### calculate log_returns
 ```{r}
-# Updated
 all_rets <- usdjpy_rate %>%
   arrange(sasdate) %>%
   mutate(
-    log_return_1m  = log(EXJPUSx) - log(lag(EXJPUSx, 1)),
-    log_return_3m  = log(EXJPUSx) - log(lag(EXJPUSx, 3)),
-    log_return_6m  = log(EXJPUSx) - log(lag(EXJPUSx, 6)),
-    log_return_12m = log(EXJPUSx) - log(lag(EXJPUSx, 12))
+    log_return_1m  = log(lead(EXJPUSx,  1)) - log(EXJPUSx),
+    log_return_3m  = log(lead(EXJPUSx,  3)) - log(EXJPUSx),
+    log_return_6m  = log(lead(EXJPUSx,  6)) - log(EXJPUSx),
+    log_return_12m = log(lead(EXJPUSx, 12)) - log(EXJPUSx)
   ) %>%
-  rename(date = sasdate)   
+  rename(date = sasdate)
 
 returns_1m <- all_rets %>%
   select(date, EXJPUSx, log_return_1m) %>%
@@ -78,37 +77,62 @@ returns_12m <- all_rets %>%
 
 ### Merge with X variables
 ```{r}
-df_1m  <- returns_1m  %>% left_join(df_clean, by = "date")
-df_3m  <- returns_3m  %>% left_join(df_clean, by = "date")
-df_6m  <- returns_6m  %>% left_join(df_clean, by = "date")
-df_12m <- returns_12m %>% left_join(df_clean, by = "date")
+df_1m  <- returns_1m  %>% left_join(df_clean, by = "date") %>% slice(-1)
+df_3m  <- returns_3m  %>% left_join(df_clean, by = "date")%>% slice(-1)
+df_6m  <- returns_6m  %>% left_join(df_clean, by = "date")%>% slice(-1)
+df_12m <- returns_12m %>% left_join(df_clean, by = "date")%>% slice(-1)
+```
+
+
+```{r}
+r1m <- usdjpy_rate %>%
+  arrange(sasdate) %>%
+  mutate(r = log(EXJPUSx) - log(lag(EXJPUSx))) %>%
+  filter(!is.na(r)) %>%
+  pull(r)
+
+Tn <- length(r1m)
+
+# 2) Schwert upper bound for monthly data
+Lmax <- floor(12 * (Tn/100)^(1/4))
+
+# 3) Fit AR(p) for p = 0..Lmax; compute BIC = AIC with k = log(T)
+bic_tbl <- lapply(0:Lmax, function(p) {
+  fit <- arima(r1m, order = c(p, 0, 0), include.mean = TRUE, method = "ML")
+  data.frame(p = p,
+             BIC = AIC(fit, k = log(Tn)),
+             sigma2 = fit$sigma2)
+}) %>% bind_rows()
+
+# 4) Pick p with lowest BIC
+p_star <- bic_tbl$p[which.min(bic_tbl$BIC)]
+p_star
+bic_tbl
+```
+```{r}
+r1m_with_date <- usdjpy_rate %>%
+  arrange(sasdate) %>%
+  mutate(r = log(EXJPUSx) - log(lag(EXJPUSx))) %>%
+  filter(!is.na(r)) %>% rename(monthly_return_lag1 = r) %>% rename(date = sasdate) %>% select(-EXJPUSx)
+df_1m_lag  <- df_1m  %>% left_join(r1m_with_date, by = "date") %>% filter (date <= '2022-12-01')
+df_3m_lag  <- df_3m  %>% left_join(r1m_with_date, by = "date") %>% filter (date <= '2022-12-01')
+df_6m_lag  <- df_6m  %>% left_join(r1m_with_date, by = "date") %>% filter (date <= '2022-12-01')
+df_12m_lag <- df_12m  %>% left_join(r1m_with_date, by = "date") %>% filter (date <= '2022-12-01')
+```
+
+
+```{r}
+df_1m_lag
+df_3m_lag
+df_6m_lag
+df_12m_lag
 ```
 
 ```{r}
-# Keep only: date, EXJPUSx, target; add lagged predictors; drop originals
-lag_x_keep_base <- function(df, target_col, h) {
-  pred_cols <- setdiff(names(df), c("date", "EXJPUSx.x",target_col))
-
-  df %>%
-    arrange(date) %>%
-    mutate(
-      across(
-        all_of(pred_cols),
-        ~ dplyr::lag(.x, h),
-        .names = "{.col}_lag{h}"
-      )
-    ) %>%
-    select(date, "EXJPUSx.x", all_of(target_col), ends_with(paste0("_lag", h))) %>%
-    drop_na()  
-}
-
-```
-
-```{r}
-write.csv(df_1m_lag,  "df_1m_new.csv",  row.names = FALSE)
-write.csv(df_3m_lag,  "df_3m_new.csv",  row.names = FALSE)
-write.csv(df_6m_lag,  "df_6m_new.csv",  row.names = FALSE)
-write.csv(df_12m_lag, "df_12m_new.csv", row.names = FALSE)
+write.csv(df_1m_lag,  "../data/df_1m_lag.csv",  row.names = FALSE)
+write.csv(df_3m_lag,  "../data/df_3m_lag.csv",  row.names = FALSE)
+write.csv(df_6m_lag,  "../data/df_6m_lag.csv",  row.names = FALSE)
+write.csv(df_12m_lag, "../data/df_12m_lag.csv", row.names = FALSE)
 ```
 
 ### archives
@@ -184,4 +208,20 @@ walk2(
   ~ write_csv(.x, paste0(.y, ".csv"))
 )
 
+# Keep only: date, EXJPUSx, target; add lagged predictors; drop originals
+lag_x_keep_base <- function(df, target_col, h) {
+  pred_cols <- setdiff(names(df), c("date", "EXJPUSx.x",target_col))
+
+  df %>%
+    arrange(date) %>%
+    mutate(
+      across(
+        all_of(pred_cols),
+        ~ dplyr::lag(.x, h),
+        .names = "{.col}_lag{h}"
+      )
+    ) %>%
+    select(date, "EXJPUSx.x", all_of(target_col), ends_with(paste0("_lag", h))) %>%
+    drop_na()  
+}
 ```
