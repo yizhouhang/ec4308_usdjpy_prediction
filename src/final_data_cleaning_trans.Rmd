@@ -135,10 +135,36 @@ df_3m  <- prep_h(df_3m, 3)
 df_6m  <- prep_h(df_6m, 6)
 df_12m <- prep_h(df_12m, 12)
 
-df_1m_lag  <- df_1m  %>% left_join(r1m_with_date, by = "date") %>% filter (date <= '2022-12-01') %>% relocate(monthly_return_lag1, .before = x1) %>% relocate(fx_level_fwd_1m, .after = current_fx_level)
-df_3m_lag  <- df_3m  %>% left_join(r1m_with_date, by = "date") %>% filter (date <= '2022-12-01') %>% relocate(monthly_return_lag1, .before = x1) %>% relocate(fx_level_fwd_3m, .after = current_fx_level)
-df_6m_lag  <- df_6m  %>% left_join(r1m_with_date, by = "date") %>% filter (date <= '2022-12-01') %>% relocate(monthly_return_lag1, .before = x1) %>% relocate(fx_level_fwd_6m, .after = current_fx_level)
-df_12m_lag <- df_12m  %>% left_join(r1m_with_date, by = "date") %>% filter (date <= '2022-12-01') %>% relocate(monthly_return_lag1, .before = x1) %>% relocate(fx_level_fwd_12m, .after = current_fx_level)
+df_1m_lag  <- df_1m  %>% 
+  left_join(r1m_with_date, by = "date") %>% 
+  filter (date <= '2022-12-01') %>% 
+  relocate(monthly_return_lag1, .before = x1) %>% 
+  relocate(fx_level_fwd_1m, .after = current_fx_level) %>% 
+  select (-fx_level_fwd_3m, -fx_level_fwd_6m, -fx_level_fwd_12m, -fx_level_fwd) %>%
+  select (-EXJPUSx.y)
+
+df_3m_lag  <- df_3m  %>% 
+  left_join(r1m_with_date, by = "date") %>% 
+  filter (date <= '2022-12-01') %>% 
+  relocate(monthly_return_lag1, .before = x1) %>% 
+  relocate(fx_level_fwd_3m, .after = current_fx_level) %>% 
+  select (-fx_level_fwd_6m, -fx_level_fwd_12m, -fx_level_fwd_1m, -fx_level_fwd) %>%
+  select (-EXJPUSx.y)
+
+df_6m_lag  <- df_6m  %>% left_join(r1m_with_date, by = "date") %>% 
+  filter (date <= '2022-12-01') %>% 
+  relocate(monthly_return_lag1, .before = x1) %>% 
+  relocate(fx_level_fwd_6m, .after = current_fx_level) %>% 
+  select (-fx_level_fwd_1m, -fx_level_fwd_3m, -fx_level_fwd_12m, -fx_level_fwd) %>%
+  select (-EXJPUSx.y)
+
+df_12m_lag <- df_12m  %>% 
+  left_join(r1m_with_date, by = "date") %>% 
+  filter (date <= '2022-12-01') %>% 
+  relocate(monthly_return_lag1, .before = x1) %>% 
+  relocate(fx_level_fwd_12m, .after = current_fx_level) %>% 
+  select (-fx_level_fwd_3m, -fx_level_fwd_6m, -fx_level_fwd_1m, -fx_level_fwd) %>%
+  select (-EXJPUSx.y)
 ```
 
 
