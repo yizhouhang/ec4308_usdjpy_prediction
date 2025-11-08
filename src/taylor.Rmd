@@ -36,7 +36,6 @@ jp = jp_raw %>% mutate(pi_jp = yoy_log(cpijp)) %>%
 ```
 
 #### Output Gap (one-sided HP) from Industrial Production
-
 ```{r}
 library(KFAS)
 
@@ -86,148 +85,324 @@ jp_gap <- jp_ip_raw %>%
 us_rate_path = '../data/fedfund_us.csv'
 us_rate_raw = read_csv(us_rate_path, show_col_types = FALSE) %>%
   filter(date >= "1974-01-01") %>% 
-  mutate(i_us_l1 = dplyr::lag(FEDFUNDS, 1)) %>% select (date, i_us_l1)
+  mutate(i_us_l1 = FEDFUNDS) %>% select (date, i_us_l1)
 
 # ---- JP rate ----
 jp_rate_path = '../data/rate_jp.csv'
 jp_rate_raw = read_csv(jp_rate_path, show_col_types = FALSE) %>% 
   filter (date >= '1974-01-01') %>%
-  mutate (i_jp_l1 = dplyr::lag(rate, 1)) %>%
+  mutate (i_jp_l1 = rate) %>%
   select (date, i_jp_l1)
 ```
 
 #### FX return target
-```{r}
-fx = read_csv('../data/exjpusx.csv', show_col_types = FALSE) %>%
-  filter(date >= '1974-01-01')
-```
 
 ```{r}
-tr = fx %>% inner_join (us %>% select (date, pi_us), by = 'date') %>%
+# ---- join regressors to returns
+regs <- us %>% select(date, pi_us) %>%
   inner_join(jp %>% select(date, pi_jp), by = "date") %>%
   inner_join(us_gap %>% select(date, gap_us), by = "date") %>%
   inner_join(jp_gap %>% select(date, gap_jp), by = "date") %>%
-  inner_join(us_rate_raw, by = "date") %>%
-  inner_join(jp_rate_raw, by = "date") %>%
-  tidyr::drop_na() %>%
-  filter (date <= '2022-12-31')
+  inner_join(us_rate_raw %>% select(date, i_us_l1), by = "date") %>%
+  inner_join(jp_rate_raw %>% select(date, i_jp_l1), by = "date")
 ```
 
 ```{r}
-train = tr %>% filter (date <= '2012-12-31')
-test = tr %>% filter (date > '2012-12-31')
-```
-
-```{r}
-fit_tr = lm(EXJPUSx ~ pi_us + pi_jp + gap_us + gap_jp + i_us_l1 + i_jp_l1,
-            data = train)
-test = test %>%
-  mutate(f_tr  = as.numeric(predict(fit_tr, newdata = cur_data())),
-    f_rw0 = 0)
-
-mse = function(y, yhat) mean((y - yhat)^2, na.rm = TRUE)
-
-mse_tr  <- mse(test$EXJPUSx, test$f_tr)
-mse_rw0 <- mse(test$EXJPUSx, test$f_rw0)
-```
-
-```{r}
-mse_tr
-```
-
-```{r}
-mse_rw0
-```
-
-#### test
-```{r}
-library(purrr)
-# --- prep base (join your regressors to r1) ---
-base = fx %>%                                   # columns: date, r1 (Δlog s)
-  mutate(date = ymd(date)) %>%
-  filter(date >= as.Date("1974-01-01")) %>%
-  inner_join(tr %>%
-               select(date, pi_us, pi_jp, gap_us, gap_jp, i_us_l1, i_jp_l1),
-             by = "date") %>%
-  arrange(date)
-
-build_target_from_r1 <- function(df, h){
-  df %>%
-    arrange(date) %>%
-    mutate(target = Reduce(`+`, lapply(1:h, function(k) dplyr::lead(EXJPUSx, k))))
-}
-
-cut_train <- as.Date("2012-12-31")
-cut_test  <- as.Date("2022-12-31")
-horizons  <- c(1,3,6,12)
-max_h     <- max(horizons)
-
-rmse <- function(y, yhat) sqrt(mean((y - yhat)^2, na.rm = TRUE))
-r2_test <- function(y, yhat){
-  sse <- sum((y - yhat)^2, na.rm = TRUE)
-  sst <- sum((y - mean(y, na.rm = TRUE))^2, na.rm = TRUE)
-  1 - sse/sst
-}
-
-results <- map_dfr(horizons, function(h){
-  dat_h <- build_target_from_r1(base, h) %>% 
-    tidyr::drop_na(target, pi_us, pi_jp, gap_us, gap_jp, i_us_l1, i_jp_l1)
-
-  # NO FUTURE IN TRAIN: last train label uses only data ≤ 2012-12
-  train_end_h <- cut_train %m-% months(h)
-  train_h <- dat_h %>% filter(date <= train_end_h)
-
-  # SAME TEST WINDOW FOR ALL h (intersection)
-  test_start <- as.Date("2013-01-01")
-  test_end   <- cut_test %m-% months(max_h)
-  test_h <- dat_h %>% filter(date >= test_start, date <= test_end)
-
-  fit <- lm(target ~ pi_us + pi_jp + gap_us + gap_jp + i_us_l1 + i_jp_l1, data = train_h)
-  test_h <- test_h %>% mutate(f_tr = as.numeric(predict(fit, newdata = cur_data())),
-                              f_rw0 = 0)
-
-  tibble(
-    h = h,
-    n_train = nrow(train_h), n_test = nrow(test_h),
-    train_end = max(train_h$date),
-    test_start = min(test_h$date), test_end = max(test_h$date),
-    rmse_tr  = rmse(test_h$target, test_h$f_tr),
-    rmse_rw0 = rmse(test_h$target, test_h$f_rw0),
-    rmse_diff = rmse(test_h$target, test_h$f_tr) - rmse(test_h$target, test_h$f_rw0),
-    rmse_ratio = rmse(test_h$target, test_h$f_tr) / rmse(test_h$target, test_h$f_rw0),
-    r2_test = r2_test(test_h$target, test_h$f_tr), 
-    r2_oos_rw0 = 1 - mse_tr/mse_rw0
-  )
-})
-
-results
-```
-
-#### Choose Lags
-```{r}
-fx_lag = read_csv("../data/exjpusx.csv", show_col_types = FALSE) %>%
-  mutate(date = ymd(date)) %>%
+fx <- read_csv("../data/df_1m_lag.csv", show_col_types = FALSE) %>%
+  select(date, Y_log_return_1m) %>%
   arrange(date) %>%
-  transmute(date, r1 = EXJPUSx)
+  filter(!is.na(Y_log_return_1m))
 
-x_lag = fx_lag$r1
-par(mfrow = c(1,2))
-acf(x, na.action = na.omit, lag.max = 36, main = "ACF of r1")
-pacf(x, na.action = na.omit, lag.max = 36, main = "PACF of r1")
-par(mfrow = c(1,1))
+base <- fx %>%
+  mutate(date = as.Date(date)) %>%
+  inner_join(regs, by = "date") %>%
+  arrange(date) %>%
+  filter(date <= as.Date("2022-12-31"))
 
+# ---- rolling OLS with fixed window determined at cutoff
+
+roll_ols_multi <- function(dat_h, h, cutoff_date){
+  dat_h <- dat_h %>% 
+    tidyr::drop_na(Y_log_return_1m, pi_us, pi_jp, gap_us, gap_jp, i_us_l1, i_jp_l1)
+
+  # window size = usable rows up to cutoff (labels known up to cutoff)
+  W <- dat_h %>% filter(date <= cutoff_date) %>% nrow()
+
+  # first decision date index (D = cutoff + h months)
+  D0 <- cutoff_date %m+% months(h)
+  i_start <- which(dat_h$date == D0)
+  if (length(i_start) == 0) stop("First decision date not found in data.")
+
+  n <- nrow(dat_h)
+  yhat_tr  <- rep(NA_real_, n)
+  yhat_rw0 <- rep(0, n)
+
+  for (i in i_start:n){
+    tr_end   <- i - h
+    tr_start <- tr_end - W + 1
+    if (tr_start < 1) next
+
+    fit <- lm(Y_log_return_1m ~ pi_us + pi_jp + gap_us + gap_jp + i_us_l1 + i_jp_l1,
+              data = dat_h[tr_start:tr_end, ])
+
+    yhat_tr[i] <- predict(fit, newdata = dat_h[i, , drop = FALSE])
+  }
+
+  oos <- dat_h %>%
+    mutate(f_tr = yhat_tr, f_rw0 = yhat_rw0) %>%
+    filter(!is.na(f_tr))
+
+  rmse <- function(y, yhat) sqrt(mean((y - yhat)^2, na.rm = TRUE))
+  e_tr  <- oos$Y_log_return_1m - oos$f_tr
+  e_rw0 <- oos$Y_log_return_1m - oos$f_rw0
+
+  summary <- tibble::tibble(
+    h = h,
+    window_W = W,
+    first_decision_date = dat_h$date[i_start],
+    n_oos = nrow(oos),
+    RMSE_TR   = rmse(oos$Y_log_return_1m, oos$f_tr),   # <- was oos$target
+    RMSE_RW0  = rmse(oos$Y_log_return_1m, oos$f_rw0),  # <- was oos$target
+    R2_OOS_vs_RW0 = 1 - sum(e_tr^2) / sum(e_rw0^2)
+  )
+
+  list(summary = summary, oos = oos)
+}
+
+# ---- fit and run
+h <- 1
+cutoff <- as.Date("2012-12-01")
+
+out <- roll_ols_multi(base, h, cutoff)
+summary_tbl <- out$summary
+oos_1m      <- out$oos
+
+print(summary_tbl)
+# head(oos_1m)
+```
+
+
+```{r}
+fx <- read_csv("../data/df_3m_lag.csv", show_col_types = FALSE) %>%
+  select(date, Y_log_return_3m) %>%
+  arrange(date) %>%
+  filter(!is.na(Y_log_return_3m))
+
+base <- fx %>%
+  mutate(date = as.Date(date)) %>%
+  inner_join(regs, by = "date") %>%
+  arrange(date) %>%
+  filter(date <= as.Date("2022-12-31"))
+
+# ---- rolling OLS with fixed window determined at cutoff
+
+roll_ols_multi <- function(dat_h, h, cutoff_date){
+  dat_h <- dat_h %>% 
+    tidyr::drop_na(Y_log_return_3m, pi_us, pi_jp, gap_us, gap_jp, i_us_l1, i_jp_l1)
+
+  # window size = usable rows up to cutoff (labels known up to cutoff)
+  W <- dat_h %>% filter(date <= cutoff_date) %>% nrow()
+
+  # first decision date index (D = cutoff + h months)
+  D0 <- cutoff_date %m+% months(h)
+  i_start <- which(dat_h$date == D0)
+  if (length(i_start) == 0) stop("First decision date not found in data.")
+
+  n <- nrow(dat_h)
+  yhat_tr  <- rep(NA_real_, n)
+  yhat_rw0 <- rep(0, n)
+
+  for (i in i_start:n){
+    tr_end   <- i - h
+    tr_start <- tr_end - W + 1
+    if (tr_start < 1) next
+
+    fit <- lm(Y_log_return_3m ~ pi_us + pi_jp + gap_us + gap_jp + i_us_l1 + i_jp_l1,
+              data = dat_h[tr_start:tr_end, ])
+
+    yhat_tr[i] <- predict(fit, newdata = dat_h[i, , drop = FALSE])
+  }
+
+  oos <- dat_h %>%
+    mutate(f_tr = yhat_tr, f_rw0 = yhat_rw0) %>%
+    filter(!is.na(f_tr))
+
+  rmse <- function(y, yhat) sqrt(mean((y - yhat)^2, na.rm = TRUE))
+  e_tr  <- oos$Y_log_return_3m - oos$f_tr
+  e_rw0 <- oos$Y_log_return_3m - oos$f_rw0
+
+  summary <- tibble::tibble(
+    h = h,
+    window_W = W,
+    first_decision_date = dat_h$date[i_start],
+    n_oos = nrow(oos),
+    RMSE_TR   = rmse(oos$Y_log_return_3m, oos$f_tr),   # <- was oos$target
+    RMSE_RW0  = rmse(oos$Y_log_return_3m, oos$f_rw0),  # <- was oos$target
+    R2_OOS_vs_RW0 = 1 - sum(e_tr^2) / sum(e_rw0^2)
+  )
+
+  list(summary = summary, oos = oos)
+}
+
+# ---- fit and run
+h <- 3
+cutoff <- as.Date("2012-12-01")
+
+out <- roll_ols_multi(base, h, cutoff)
+summary_tbl <- out$summary
+oos_3m      <- out$oos
+
+print(summary_tbl)
+# head(oos_3m)
 ```
 
 ```{r}
-x <- fx_lag$r1
-cor(x, dplyr::lag(x,1), use="pairwise.complete.obs")  # should be small for FX returns
+fx <- read_csv("../data/df_6m_lag.csv", show_col_types = FALSE) %>%
+  select(date, Y_log_return_6m) %>%
+  arrange(date) %>%
+  filter(!is.na(Y_log_return_6m))
 
+base <- fx %>%
+  mutate(date = as.Date(date)) %>%
+  inner_join(regs, by = "date") %>%
+  arrange(date) %>%
+  filter(date <= as.Date("2022-12-31"))
+
+# ---- rolling OLS with fixed window determined at cutoff
+
+roll_ols_multi <- function(dat_h, h, cutoff_date){
+  dat_h <- dat_h %>% 
+    tidyr::drop_na(Y_log_return_6m, pi_us, pi_jp, gap_us, gap_jp, i_us_l1, i_jp_l1)
+
+  # window size = usable rows up to cutoff (labels known up to cutoff)
+  W <- dat_h %>% filter(date <= cutoff_date) %>% nrow()
+
+  # first decision date index (D = cutoff + h months)
+  D0 <- cutoff_date %m+% months(h)
+  i_start <- which(dat_h$date == D0)
+  if (length(i_start) == 0) stop("First decision date not found in data.")
+
+  n <- nrow(dat_h)
+  yhat_tr  <- rep(NA_real_, n)
+  yhat_rw0 <- rep(0, n)
+
+  for (i in i_start:n){
+    tr_end   <- i - h
+    tr_start <- tr_end - W + 1
+    if (tr_start < 1) next
+
+    fit <- lm(Y_log_return_6m ~ pi_us + pi_jp + gap_us + gap_jp + i_us_l1 + i_jp_l1,
+              data = dat_h[tr_start:tr_end, ])
+
+    yhat_tr[i] <- predict(fit, newdata = dat_h[i, , drop = FALSE])
+  }
+
+  oos <- dat_h %>%
+    mutate(f_tr = yhat_tr, f_rw0 = yhat_rw0) %>%
+    filter(!is.na(f_tr))
+
+  rmse <- function(y, yhat) sqrt(mean((y - yhat)^2, na.rm = TRUE))
+  e_tr  <- oos$Y_log_return_6m - oos$f_tr
+  e_rw0 <- oos$Y_log_return_6m - oos$f_rw0
+
+  summary <- tibble::tibble(
+    h = h,
+    window_W = W,
+    first_decision_date = dat_h$date[i_start],
+    n_oos = nrow(oos),
+    RMSE_TR   = rmse(oos$Y_log_return_6m, oos$f_tr),   # <- was oos$target
+    RMSE_RW0  = rmse(oos$Y_log_return_6m, oos$f_rw0),  # <- was oos$target
+    R2_OOS_vs_RW0 = 1 - sum(e_tr^2) / sum(e_rw0^2)
+  )
+
+  list(summary = summary, oos = oos)
+}
+
+# ---- fit and run
+h <- 6
+cutoff <- as.Date("2012-12-01")
+
+out <- roll_ols_multi(base, h, cutoff)
+summary_tbl <- out$summary
+oos_6m      <- out$oos
+
+print(summary_tbl)
+# head(oos_6m)
 ```
 
+```{r}
+fx <- read_csv("../data/df_12m_lag.csv", show_col_types = FALSE) %>%
+  select(date, Y_log_return_12m) %>%
+  arrange(date) %>%
+  filter(!is.na(Y_log_return_12m))
 
+base <- fx %>%
+  mutate(date = as.Date(date)) %>%
+  inner_join(regs, by = "date") %>%
+  arrange(date) %>%
+  filter(date <= as.Date("2022-12-31"))
 
+# ---- rolling OLS with fixed window determined at cutoff
 
+roll_ols_multi <- function(dat_h, h, cutoff_date){
+  dat_h <- dat_h %>% 
+    tidyr::drop_na(Y_log_return_12m, pi_us, pi_jp, gap_us, gap_jp, i_us_l1, i_jp_l1)
 
+  # window size = usable rows up to cutoff (labels known up to cutoff)
+  W <- dat_h %>% filter(date <= cutoff_date) %>% nrow()
+
+  # first decision date index (D = cutoff + h months)
+  D0 <- cutoff_date %m+% months(h)
+  i_start <- which(dat_h$date == D0)
+  if (length(i_start) == 0) stop("First decision date not found in data.")
+
+  n <- nrow(dat_h)
+  yhat_tr  <- rep(NA_real_, n)
+  yhat_rw0 <- rep(0, n)
+
+  for (i in i_start:n){
+    tr_end   <- i - h
+    tr_start <- tr_end - W + 1
+    if (tr_start < 1) next
+
+    fit <- lm(Y_log_return_12m ~ pi_us + pi_jp + gap_us + gap_jp + i_us_l1 + i_jp_l1,
+              data = dat_h[tr_start:tr_end, ])
+
+    yhat_tr[i] <- predict(fit, newdata = dat_h[i, , drop = FALSE])
+  }
+
+  oos <- dat_h %>%
+    mutate(f_tr = yhat_tr, f_rw0 = yhat_rw0) %>%
+    filter(!is.na(f_tr))
+
+  rmse <- function(y, yhat) sqrt(mean((y - yhat)^2, na.rm = TRUE))
+  e_tr  <- oos$Y_log_return_12m - oos$f_tr
+  e_rw0 <- oos$Y_log_return_12m - oos$f_rw0
+
+  summary <- tibble::tibble(
+    h = h,
+    window_W = W,
+    first_decision_date = dat_h$date[i_start],
+    n_oos = nrow(oos),
+    RMSE_TR   = rmse(oos$Y_log_return_12m, oos$f_tr),   # <- was oos$target
+    RMSE_RW0  = rmse(oos$Y_log_return_12m, oos$f_rw0),  # <- was oos$target
+    R2_OOS_vs_RW0 = 1 - sum(e_tr^2) / sum(e_rw0^2)
+  )
+
+  list(summary = summary, oos = oos)
+}
+
+# ---- fit and run
+h <- 12
+cutoff <- as.Date("2012-12-01")
+
+out <- roll_ols_multi(base, h, cutoff)
+summary_tbl <- out$summary
+oos_12m      <- out$oos
+
+print(summary_tbl)
+# head(oos_12m)
+```
 
 
 
