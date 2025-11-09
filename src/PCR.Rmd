@@ -115,6 +115,32 @@ cutoff <- as.Date("2012-12-01")
 
 out_1m <- roll_pcr_bic_pls(base, target_col, pred_cols, h, cutoff, Kmax = 10)
 out_1m$summary
+
+# --- directional accuracy for 3m PCR (and RW0) ---
+oos <- out_1m$oos %>%
+  transmute(date,
+            y    = !!rlang::sym(target_col),   # realized 3m return
+            f_pcr = f_pcr,
+            f_rw0 = f_rw0)
+
+# Basic DA = share of times predicted and realized have the same sign
+da <- function(y, yhat) mean(sign(y) == sign(yhat), na.rm = TRUE)
+
+da_pcr <- da(oos$y, oos$f_pcr)
+da_rw0 <- da(oos$y, oos$f_rw0)   # RW0 predicts 0 → DA is share of exact zeros in y
+
+# Confusion matrix (signs: -1, 0, 1)
+tab_sign <- table(truth = sign(oos$y), pred = sign(oos$f_pcr))
+
+# --- compact summary ---
+tibble::tibble(
+  horizon        = "1m",
+  n_oos          = nrow(oos),
+  DA_PCR         = da_pcr,
+  DA_RW0         = da_rw0,
+) -> da_summary
+
+print(da_summary)
 ```
 
 ```{r}
@@ -127,6 +153,32 @@ cutoff <- as.Date("2012-12-01")
 
 out_3m <- roll_pcr_bic_pls(base, target_col, pred_cols, h, cutoff, Kmax = 10)
 out_3m$summary
+
+# --- directional accuracy for 3m PCR (and RW0) ---
+oos <- out_3m$oos %>%
+  transmute(date,
+            y    = !!rlang::sym(target_col),   # realized 3m return
+            f_pcr = f_pcr,
+            f_rw0 = f_rw0)
+
+# Basic DA = share of times predicted and realized have the same sign
+da <- function(y, yhat) mean(sign(y) == sign(yhat), na.rm = TRUE)
+
+da_pcr <- da(oos$y, oos$f_pcr)
+da_rw0 <- da(oos$y, oos$f_rw0)   # RW0 predicts 0 → DA is share of exact zeros in y
+
+# Confusion matrix (signs: -1, 0, 1)
+tab_sign <- table(truth = sign(oos$y), pred = sign(oos$f_pcr))
+
+# --- compact summary ---
+tibble::tibble(
+  horizon        = "3m",
+  n_oos          = nrow(oos),
+  DA_PCR         = da_pcr,
+  DA_RW0         = da_rw0,
+) -> da_summary
+
+print(da_summary)
 ```
 
 
@@ -140,6 +192,32 @@ cutoff <- as.Date("2012-12-01")
 
 out_6m <- roll_pcr_bic_pls(base, target_col, pred_cols, h, cutoff, Kmax = 10)
 out_6m$summary
+
+# --- directional accuracy for 6m PCR (and RW0) ---
+oos <- out_6m$oos %>%
+  transmute(date,
+            y    = !!rlang::sym(target_col),   # realized 6m return
+            f_pcr = f_pcr,
+            f_rw0 = f_rw0)
+
+# Basic DA = share of times predicted and realized have the same sign
+da <- function(y, yhat) mean(sign(y) == sign(yhat), na.rm = TRUE)
+
+da_pcr <- da(oos$y, oos$f_pcr)
+da_rw0 <- da(oos$y, oos$f_rw0)   # RW0 predicts 0 → DA is share of exact zeros in y
+
+# Confusion matrix (signs: -1, 0, 1)
+tab_sign <- table(truth = sign(oos$y), pred = sign(oos$f_pcr))
+
+# --- compact summary ---
+tibble::tibble(
+  horizon        = "6m",
+  n_oos          = nrow(oos),
+  DA_PCR         = da_pcr,
+  DA_RW0         = da_rw0,
+) -> da_summary
+
+print(da_summary)
 ```
 
 ```{r}
@@ -151,4 +229,44 @@ h <- 12
 cutoff <- as.Date("2012-12-01")
 out_12m <- roll_pcr_bic_pls(base, target_col, pred_cols, h, cutoff, Kmax = 10)
 out_12m$summary
+
+# --- directional accuracy for 12m PCR (and RW0) ---
+oos <- out_12m$oos %>%
+  transmute(date,
+            y    = !!rlang::sym(target_col),   # realized 12m return
+            f_pcr = f_pcr,
+            f_rw0 = f_rw0)
+
+# Basic DA = share of times predicted and realized have the same sign
+da <- function(y, yhat) mean(sign(y) == sign(yhat), na.rm = TRUE)
+
+da_pcr <- da(oos$y, oos$f_pcr)
+da_rw0 <- da(oos$y, oos$f_rw0)   # RW0 predicts 0 → DA is share of exact zeros in y
+
+# Confusion matrix (signs: -1, 0, 1)
+tab_sign <- table(truth = sign(oos$y), pred = sign(oos$f_pcr))
+
+# --- compact summary ---
+tibble::tibble(
+  horizon        = "12m",
+  n_oos          = nrow(oos),
+  DA_PCR         = da_pcr,
+  DA_RW0         = da_rw0,
+) -> da_summary
+
+print(da_summary)
+tab_sign
 ```
+
+```{r}
+
+```
+
+
+
+
+
+
+
+
+

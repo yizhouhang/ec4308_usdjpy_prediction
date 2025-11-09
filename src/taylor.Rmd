@@ -120,7 +120,6 @@ base <- fx %>%
   filter(date <= as.Date("2022-12-31"))
 
 # ---- rolling OLS with fixed window determined at cutoff
-
 roll_ols_multi <- function(dat_h, h, cutoff_date){
   dat_h <- dat_h %>% 
     tidyr::drop_na(Y_log_return_1m, pi_us, pi_jp, gap_us, gap_jp, i_us_l1, i_jp_l1)
@@ -156,14 +155,27 @@ roll_ols_multi <- function(dat_h, h, cutoff_date){
   e_tr  <- oos$Y_log_return_1m - oos$f_tr
   e_rw0 <- oos$Y_log_return_1m - oos$f_rw0
 
+  # ---- directional accuracy (exclude zeros) ----
+  da <- function(y, yhat, drop_zero = TRUE) {
+    sy <- sign(y); sf <- sign(yhat)
+    ok <- is.finite(sy) & is.finite(sf)
+    if (drop_zero) ok <- ok & sy != 0 & sf != 0
+    if (!any(ok)) return(NA_real_)
+    mean(sy[ok] == sf[ok])
+  }
+  DA_TR  <- da(oos$Y_log_return_1m, oos$f_tr,  drop_zero = TRUE)
+  DA_RW0 <- da(oos$Y_log_return_1m, oos$f_rw0, drop_zero = TRUE)
+
   summary <- tibble::tibble(
     h = h,
     window_W = W,
     first_decision_date = dat_h$date[i_start],
     n_oos = nrow(oos),
-    RMSE_TR   = rmse(oos$Y_log_return_1m, oos$f_tr),   # <- was oos$target
-    RMSE_RW0  = rmse(oos$Y_log_return_1m, oos$f_rw0),  # <- was oos$target
-    R2_OOS_vs_RW0 = 1 - sum(e_tr^2) / sum(e_rw0^2)
+    RMSE_TR   = rmse(oos$Y_log_return_1m, oos$f_tr),
+    RMSE_RW0  = rmse(oos$Y_log_return_1m, oos$f_rw0),
+    R2_OOS_vs_RW0 = 1 - sum(e_tr^2) / sum(e_rw0^2),
+    DA_TR     = DA_TR,
+    DA_RW0    = DA_RW0
   )
 
   list(summary = summary, oos = oos)
@@ -179,6 +191,7 @@ oos_1m      <- out$oos
 
 print(summary_tbl)
 # head(oos_1m)
+
 ```
 
 
@@ -195,7 +208,6 @@ base <- fx %>%
   filter(date <= as.Date("2022-12-31"))
 
 # ---- rolling OLS with fixed window determined at cutoff
-
 roll_ols_multi <- function(dat_h, h, cutoff_date){
   dat_h <- dat_h %>% 
     tidyr::drop_na(Y_log_return_3m, pi_us, pi_jp, gap_us, gap_jp, i_us_l1, i_jp_l1)
@@ -231,14 +243,27 @@ roll_ols_multi <- function(dat_h, h, cutoff_date){
   e_tr  <- oos$Y_log_return_3m - oos$f_tr
   e_rw0 <- oos$Y_log_return_3m - oos$f_rw0
 
+  # ---- directional accuracy (exclude zeros) ----
+  da <- function(y, yhat, drop_zero = TRUE) {
+    sy <- sign(y); sf <- sign(yhat)
+    ok <- is.finite(sy) & is.finite(sf)
+    if (drop_zero) ok <- ok & sy != 0 & sf != 0
+    if (!any(ok)) return(NA_real_)
+    mean(sy[ok] == sf[ok])
+  }
+  DA_TR  <- da(oos$Y_log_return_3m, oos$f_tr,  drop_zero = TRUE)
+  DA_RW0 <- da(oos$Y_log_return_3m, oos$f_rw0, drop_zero = TRUE)
+
   summary <- tibble::tibble(
     h = h,
     window_W = W,
     first_decision_date = dat_h$date[i_start],
     n_oos = nrow(oos),
-    RMSE_TR   = rmse(oos$Y_log_return_3m, oos$f_tr),   # <- was oos$target
-    RMSE_RW0  = rmse(oos$Y_log_return_3m, oos$f_rw0),  # <- was oos$target
-    R2_OOS_vs_RW0 = 1 - sum(e_tr^2) / sum(e_rw0^2)
+    RMSE_TR   = rmse(oos$Y_log_return_3m, oos$f_tr),
+    RMSE_RW0  = rmse(oos$Y_log_return_3m, oos$f_rw0),
+    R2_OOS_vs_RW0 = 1 - sum(e_tr^2) / sum(e_rw0^2),
+    DA_TR     = DA_TR,
+    DA_RW0    = DA_RW0
   )
 
   list(summary = summary, oos = oos)
@@ -269,7 +294,6 @@ base <- fx %>%
   filter(date <= as.Date("2022-12-31"))
 
 # ---- rolling OLS with fixed window determined at cutoff
-
 roll_ols_multi <- function(dat_h, h, cutoff_date){
   dat_h <- dat_h %>% 
     tidyr::drop_na(Y_log_return_6m, pi_us, pi_jp, gap_us, gap_jp, i_us_l1, i_jp_l1)
@@ -305,14 +329,27 @@ roll_ols_multi <- function(dat_h, h, cutoff_date){
   e_tr  <- oos$Y_log_return_6m - oos$f_tr
   e_rw0 <- oos$Y_log_return_6m - oos$f_rw0
 
+  # ---- directional accuracy (exclude zeros) ----
+  da <- function(y, yhat, drop_zero = TRUE) {
+    sy <- sign(y); sf <- sign(yhat)
+    ok <- is.finite(sy) & is.finite(sf)
+    if (drop_zero) ok <- ok & sy != 0 & sf != 0
+    if (!any(ok)) return(NA_real_)
+    mean(sy[ok] == sf[ok])
+  }
+  DA_TR  <- da(oos$Y_log_return_6m, oos$f_tr,  drop_zero = TRUE)
+  DA_RW0 <- da(oos$Y_log_return_6m, oos$f_rw0, drop_zero = TRUE)
+
   summary <- tibble::tibble(
     h = h,
     window_W = W,
     first_decision_date = dat_h$date[i_start],
     n_oos = nrow(oos),
-    RMSE_TR   = rmse(oos$Y_log_return_6m, oos$f_tr),   # <- was oos$target
-    RMSE_RW0  = rmse(oos$Y_log_return_6m, oos$f_rw0),  # <- was oos$target
-    R2_OOS_vs_RW0 = 1 - sum(e_tr^2) / sum(e_rw0^2)
+    RMSE_TR   = rmse(oos$Y_log_return_6m, oos$f_tr),
+    RMSE_RW0  = rmse(oos$Y_log_return_6m, oos$f_rw0),
+    R2_OOS_vs_RW0 = 1 - sum(e_tr^2) / sum(e_rw0^2),
+    DA_TR     = DA_TR,
+    DA_RW0    = DA_RW0
   )
 
   list(summary = summary, oos = oos)
@@ -327,7 +364,6 @@ summary_tbl <- out$summary
 oos_6m      <- out$oos
 
 print(summary_tbl)
-# head(oos_6m)
 ```
 
 ```{r}
@@ -343,7 +379,6 @@ base <- fx %>%
   filter(date <= as.Date("2022-12-31"))
 
 # ---- rolling OLS with fixed window determined at cutoff
-
 roll_ols_multi <- function(dat_h, h, cutoff_date){
   dat_h <- dat_h %>% 
     tidyr::drop_na(Y_log_return_12m, pi_us, pi_jp, gap_us, gap_jp, i_us_l1, i_jp_l1)
@@ -379,14 +414,27 @@ roll_ols_multi <- function(dat_h, h, cutoff_date){
   e_tr  <- oos$Y_log_return_12m - oos$f_tr
   e_rw0 <- oos$Y_log_return_12m - oos$f_rw0
 
+  # ---- directional accuracy (exclude zeros) ----
+  da <- function(y, yhat, drop_zero = TRUE) {
+    sy <- sign(y); sf <- sign(yhat)
+    ok <- is.finite(sy) & is.finite(sf)
+    if (drop_zero) ok <- ok & sy != 0 & sf != 0
+    if (!any(ok)) return(NA_real_)
+    mean(sy[ok] == sf[ok])
+  }
+  DA_TR  <- da(oos$Y_log_return_12m, oos$f_tr,  drop_zero = TRUE)
+  DA_RW0 <- da(oos$Y_log_return_12m, oos$f_rw0, drop_zero = TRUE)
+
   summary <- tibble::tibble(
     h = h,
     window_W = W,
     first_decision_date = dat_h$date[i_start],
     n_oos = nrow(oos),
-    RMSE_TR   = rmse(oos$Y_log_return_12m, oos$f_tr),   # <- was oos$target
-    RMSE_RW0  = rmse(oos$Y_log_return_12m, oos$f_rw0),  # <- was oos$target
-    R2_OOS_vs_RW0 = 1 - sum(e_tr^2) / sum(e_rw0^2)
+    RMSE_TR   = rmse(oos$Y_log_return_12m, oos$f_tr),
+    RMSE_RW0  = rmse(oos$Y_log_return_12m, oos$f_rw0),
+    R2_OOS_vs_RW0 = 1 - sum(e_tr^2) / sum(e_rw0^2),
+    DA_TR     = DA_TR,
+    DA_RW0    = DA_RW0
   )
 
   list(summary = summary, oos = oos)
@@ -401,9 +449,131 @@ summary_tbl <- out$summary
 oos_12m      <- out$oos
 
 print(summary_tbl)
-# head(oos_12m)
 ```
 
+```{r}
+# ---------- helper: fixed-split OLS (no rolling) ----------
+fixed_split_ols <- function(dat, target_col, cutoff_date) {
+  dat <- dat %>%
+    mutate(date = as.Date(date)) %>%
+    arrange(date)
+
+  # predictors = all except date + target
+  pred_cols <- setdiff(names(dat), c("date", target_col))
+  # keep numeric predictors only (avoid factors/char)
+  pred_cols <- pred_cols[sapply(dat[pred_cols], is.numeric)]
+
+  # drop NAs in target/predictors
+  dat <- dat %>% drop_na(all_of(c(target_col, pred_cols)))
+
+  # train ≤ cutoff; test > cutoff (labels already aligned via your lead() build)
+  train <- dat %>% filter(date <= cutoff_date)
+  test  <- dat %>% filter(date  > cutoff_date)
+
+  if (nrow(train) < 10L) stop("Too few train rows.")
+  if (nrow(test)  <  1L) stop("No test rows after cutoff.")
+
+  # safe formula (handles weird names)
+  fml <- reformulate(termlabels = pred_cols, response = target_col)
+
+  fit <- lm(fml, data = train)
+
+  test <- test %>%
+    mutate(
+      f_ols = as.numeric(predict(fit, newdata = cur_data())),
+      f_rw0 = 0
+    ) %>%
+    drop_na(f_ols)
+
+  y   <- test[[target_col]]
+  e_m <- y - test$f_ols
+  e_rw<- y - test$f_rw0
+
+  rmse <- function(z) sqrt(mean(z^2, na.rm = TRUE))
+
+  # Directional Accuracy (exclude zeros by default)
+  da <- function(y, yhat, drop_zero = TRUE) {
+    sy <- sign(y); sf <- sign(yhat)
+    ok <- is.finite(sy) & is.finite(sf)
+    if (drop_zero) ok <- ok & sy != 0 & sf != 0
+    if (!any(ok)) return(NA_real_)
+    mean(sy[ok] == sf[ok])
+  }
+
+  summary <- tibble::tibble(
+    cutoff_date        = cutoff_date,
+    n_train            = nrow(train),
+    n_test             = nrow(test),
+    test_start         = min(test$date),
+    test_end           = max(test$date),
+    RMSE_OLS           = rmse(e_m),
+    RMSE_RW0           = rmse(e_rw),
+    R2_OOS_vs_RW0      = 1 - sum(e_m^2) / sum(e_rw^2),
+    DA_OLS             = da(y, test$f_ols, drop_zero = TRUE),
+    DA_RW0             = da(y, test$f_rw0, drop_zero = TRUE)
+  )
+
+  list(summary = summary, oos = test %>% select(date, !!target_col, f_ols, f_rw0))
+}
+
+# ---------- load each horizon dataset, run once per h ----------
+cutoff <- as.Date("2012-12-01")
+
+# 1m
+base_1m <- read_csv("../data/df_1m_lag.csv", show_col_types = FALSE) %>% select (-current_fx_level, -fx_level_fwd_1m)
+res_1m  <- fixed_split_ols(base_1m, target_col = "Y_log_return_1m", cutoff_date = cutoff)
+
+# 3m
+#base_3m <- read_csv("../data/df_3m_lag.csv", show_col_types = FALSE) %>% select (-current_fx_level, -fx_level_fwd_3m)
+base_3m <- read_csv("../data/df_3m_lag.csv", show_col_types = FALSE) %>%
+  select(date, Y_log_return_3m) %>%
+  arrange(date) %>%
+  filter(!is.na(Y_log_return_3m))%>%
+  mutate(date = as.Date(date)) %>%
+  inner_join(regs, by = "date") %>%
+  arrange(date) %>%
+  filter(date <= as.Date("2022-12-31"))
+res_3m  <- fixed_split_ols(base_3m, target_col = "Y_log_return_3m", cutoff_date = cutoff)
+
+# 6m
+#base_6m <- read_csv("../data/df_6m_lag.csv", show_col_types = FALSE) %>% select (-current_fx_level, -fx_level_fwd_6m)
+base_6m <- read_csv("../data/df_6m_lag.csv", show_col_types = FALSE) %>%
+  select(date, Y_log_return_6m) %>%
+  arrange(date) %>%
+  filter(!is.na(Y_log_return_6m))%>%
+  mutate(date = as.Date(date)) %>%
+  inner_join(regs, by = "date") %>%
+  arrange(date) %>%
+  filter(date <= as.Date("2022-12-31"))
+res_6m  <- fixed_split_ols(base_6m, target_col = "Y_log_return_6m", cutoff_date = cutoff)
+
+# 12m
+#base_12m <- read_csv("../data/df_12m_lag.csv", show_col_types = FALSE) %>% select (-current_fx_level, -fx_level_fwd_12m)
+base_12m <- read_csv("../data/df_12m_lag.csv", show_col_types = FALSE) %>%
+  select(date, Y_log_return_12m) %>%
+  arrange(date) %>%
+  filter(!is.na(Y_log_return_12m))%>%
+  mutate(date = as.Date(date)) %>%
+  inner_join(regs, by = "date") %>%
+  arrange(date) %>%
+  filter(date <= as.Date("2022-12-31"))
+res_12m  <- fixed_split_ols(base_12m, target_col = "Y_log_return_12m", cutoff_date = cutoff)
+
+# ---------- combined summary ----------
+summary_tbl <- bind_rows(
+  res_1m$summary %>% mutate(horizon = "1m"),
+  res_3m$summary %>% mutate(horizon = "3m"),
+  res_6m$summary %>% mutate(horizon = "6m"),
+  res_12m$summary %>% mutate(horizon = "12m")
+) %>%
+  select(horizon, everything())
+
+print(summary_tbl)
+
+# Per-horizon OOS predictions available as:
+# res_1m$oos ; res_3m$oos ; res_6m$oos ; res_12m$oos
+
+```
 
 
 
