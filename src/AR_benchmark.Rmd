@@ -449,6 +449,98 @@ print(summary_tbl)
 ```
 
 
+### train/test split
+```{r}
+fixed_split_ar1 <- function(dat, target_col, lag1_col, h, cutoff_date) {
+  dat <- dat %>%
+    select(date, !!rlang::sym(target_col), !!rlang::sym(lag1_col)) %>%
+    arrange(date) %>%
+    tidyr::drop_na()
+
+  train_end <- cutoff_date %m-% months(h)
+  train <- dat %>% filter(date <= train_end)
+  test  <- dat %>% filter(date  >  cutoff_date)
+  stopifnot(nrow(train) >= 12, nrow(test) >= 1)
+
+  fit <- lm(reformulate(lag1_col, target_col), data = train)
+
+  # forecasts for all test dates (single fit)
+  f_ar1       <- as.numeric(predict(fit, newdata = test))
+  f_rw0       <- rep(0, nrow(test))
+  mu_train    <- mean(train[[target_col]], na.rm = TRUE)
+  f_rw_drift  <- rep(mu_train, nrow(test))
+
+  oos <- test %>% mutate(yhat_ar1 = f_ar1, yhat_rw0 = f_rw0, yhat_rw_drift = f_rw_drift)
+
+  rmse <- function(e) sqrt(mean(e^2))
+  e_ar1 <- oos[[target_col]] - oos$yhat_ar1
+  e_rw0 <- oos[[target_col]] - oos$yhat_rw0
+  e_dr  <- oos[[target_col]] - oos$yhat_rw_drift
+
+  da <- function(y, yhat, drop_zero = TRUE){
+    sy <- sign(y); sf <- sign(yhat)
+    ok <- is.finite(sy) & is.finite(sf)
+    if (drop_zero) ok <- ok & sy != 0 & sf != 0
+    if (!any(ok)) return(NA_real_)
+    mean(sy[ok] == sf[ok])
+  }
+
+  summary <- tibble(
+    horizon             = paste0(h, "m"),
+    train_end           = train_end,
+    cutoff_date         = cutoff_date,
+    n_train             = nrow(train),
+    n_oos               = nrow(oos),
+    RMSE_AR1            = rmse(e_ar1),
+    RMSE_RW0            = rmse(e_rw0),
+    RMSE_RW_DRIFT       = rmse(e_dr),
+    R2_OOS_vs_RW0       = 1 - sum(e_ar1^2) / sum(e_rw0^2),
+    DA_AR1              = da(oos[[target_col]], oos$yhat_ar1),
+    DA_RW0              = da(oos[[target_col]], oos$yhat_rw0),
+    DA_RW_DRIFT         = da(oos[[target_col]], oos$yhat_rw_drift)
+  )
+
+  list(summary = summary, oos = oos)
+}
+```
+
+```{r}
+cutoff <- as.Date("2012-12-01")
+
+# 1m
+d1 <- read_csv("../data/df_1m_lag.csv", show_col_types = FALSE) %>% mutate(date = as.Date(date))
+out_1m <- fixed_split_ar1(d1, target_col = "Y_log_return_1m",  lag1_col = "monthly_return_lag1", h = 1,  cutoff_date = cutoff)
+
+# 3m
+d3 <- read_csv("../data/df_3m_lag.csv", show_col_types = FALSE) %>% mutate(date = as.Date(date))
+out_3m <- fixed_split_ar1(d3, target_col = "Y_log_return_3m",  lag1_col = "monthly_return_lag1", h = 3,  cutoff_date = cutoff)
+
+# 6m
+d6 <- read_csv("../data/df_6m_lag.csv", show_col_types = FALSE) %>% mutate(date = as.Date(date))
+out_6m <- fixed_split_ar1(d6, target_col = "Y_log_return_6m",  lag1_col = "monthly_return_lag1", h = 6,  cutoff_date = cutoff)
+
+# 12m
+d12 <- read_csv("../data/df_12m_lag.csv", show_col_types = FALSE) %>% mutate(date = as.Date(date))
+out_12m <- fixed_split_ar1(d12, target_col = "Y_log_return_12m", lag1_col = "monthly_return_lag1", h = 12, cutoff_date = cutoff)
+
+# Combine summaries
+bind_rows(
+  out_1m$summary,
+  out_3m$summary,
+  out_6m$summary,
+  out_12m$summary
+) %>% print()
+
+```
+
+
+
+
+
+
+
+
+
 
 
 

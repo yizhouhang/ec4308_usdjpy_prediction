@@ -22,18 +22,17 @@ roll_pcr_bic_pls <- function(dat, target_col, pred_cols, h, cutoff_date, Kmax = 
     arrange(date) %>%
     drop_na(!!rlang::sym(target_col), all_of(pred_cols))
 
-  # Fixed window length = rows up to cutoff
   W <- d %>% filter(date <= cutoff_date) %>% nrow()
   if (W < 12) stop("Not enough rows before cutoff to form a window.")
 
-  # First decision date = cutoff + h months
   D0 <- cutoff_date %m+% months(h)
   i_start <- which(d$date == D0)
   if (length(i_start) == 0) stop("First decision date not found in data (check dates).")
 
   n <- nrow(d)
   yhat_pcr <- rep(NA_real_, n)
-  yhat_rw0 <- rep(0, n)  # RW(0) baseline for returns
+  yhat_rw0 <- rep(0, n)
+  K_pick   <- rep(NA_integer_, n)   # <-- track K selected each decision
 
   for (i in i_start:n) {
     tr_end   <- i - h
@@ -44,50 +43,51 @@ roll_pcr_bic_pls <- function(dat, target_col, pred_cols, h, cutoff_date, Kmax = 
     y_tr   <- d[[target_col]][tr_idx]
     X_tr   <- as.data.frame(d[tr_idx, pred_cols, drop = FALSE])
 
-    # make syntactic, short predictor names
     pnames <- paste0("P", seq_len(ncol(X_tr)))
     names(X_tr) <- pnames
 
-    # cap number of components
     Kcap <- min(Kmax, ncol(X_tr), length(tr_idx) - 2)
     if (Kcap <= 0) next
 
-    # fit PCR on training window (formula y ~ .)
     df_tr <- data.frame(y = y_tr, X_tr)
     fit   <- pls::pcr(y ~ ., data = df_tr, scale = TRUE, validation = "none", ncomp = Kcap)
 
-    # ---- BIC over K = 0..Kcap on TRAINING window ----
     n_tr <- length(tr_idx)
     mu0  <- mean(y_tr, na.rm = TRUE)
     rss0 <- sum((y_tr - mu0)^2, na.rm = TRUE)
-    bic0 <- n_tr * log(rss0 / n_tr) + 1 * log(n_tr)   # intercept-only
+    bic0 <- n_tr * log(rss0 / n_tr) + 1 * log(n_tr)
 
     Ks    <- 1:Kcap
     rssK  <- sapply(Ks, function(K) {
       yhat_trK <- drop(predict(fit, ncomp = K, newdata = df_tr))
       sum((y_tr - yhat_trK)^2, na.rm = TRUE)
     })
-    bicK  <- n_tr * log(rssK / n_tr) + (Ks + 1) * log(n_tr)  # +1 for intercept
+    bicK  <- n_tr * log(rssK / n_tr) + (Ks + 1) * log(n_tr)
 
-    best_K <- which.min(c(bic0, bicK)) - 1  # 0..Kcap
+    best_K <- which.min(c(bic0, bicK)) - 1
+    K_pick[i] <- best_K                     # <-- save K for this decision
 
-    # ---- predict for decision row i ----
     X_i <- as.data.frame(d[i, pred_cols, drop = FALSE])
-    names(X_i) <- pnames                      # same names as training
-    df_i <- data.frame(y = NA_real_, X_i)     # dummy y column for predict()
+    names(X_i) <- pnames
+    df_i <- data.frame(y = NA_real_, X_i)
 
     yhat_pcr[i] <- if (best_K == 0) mu0 else drop(predict(fit, ncomp = best_K, newdata = df_i))
-}
+  }
 
-  # Collect OOS
   oos <- d %>%
     mutate(f_pcr = yhat_pcr,
-           f_rw0 = yhat_rw0) %>%
+           f_rw0 = yhat_rw0,
+           K_selected = K_pick) %>%          # <-- expose K in OOS
     filter(!is.na(f_pcr))
 
   rmse <- function(y, yhat) sqrt(mean((y - yhat)^2, na.rm = TRUE))
   e_pcr <- oos[[target_col]] - oos$f_pcr
   e_rw0 <- oos[[target_col]] - oos$f_rw0
+
+  # quick K summary (optional)
+  K_summary <- oos %>%
+    count(K_selected, name = "n_decisions") %>%
+    arrange(K_selected)
 
   summary <- tibble::tibble(
     horizon = paste0(h, "m"),
@@ -96,12 +96,12 @@ roll_pcr_bic_pls <- function(dat, target_col, pred_cols, h, cutoff_date, Kmax = 
     n_oos = nrow(oos),
     RMSE_PCR = rmse(oos[[target_col]], oos$f_pcr),
     RMSE_RW0 = rmse(oos[[target_col]], oos$f_rw0),
-    R2_OOS_vs_RW0 = 1 - sum(e_pcr^2) / sum(e_rw0^2)
+    R2_OOS_vs_RW0 = 1 - sum(e_pcr^2) / sum(e_rw0^2),
+    K_avg = mean(oos$K_selected, na.rm = TRUE)          # <-- average K chosen
   )
 
-  list(summary = summary, oos = oos)
+  list(summary = summary, oos = oos, K_summary = K_summary)
 }
-
 ```
 
 
@@ -258,11 +258,127 @@ print(da_summary)
 tab_sign
 ```
 
+### fixed train test
 ```{r}
+# -------- fixed train/test PCR (horizon-aware), BIC-picked K, same style as rolling --------
+fixed_pcr_bic_pls <- function(dat, target_col, pred_cols, h, cutoff_date, Kmax = 10) {
+  d <- dat %>%
+    select(date, all_of(target_col), all_of(pred_cols)) %>%
+    arrange(date) %>%
+    drop_na(!!rlang::sym(target_col), all_of(pred_cols))
 
+  # horizon-aware train/test split
+  train_end <- cutoff_date %m-% months(h)
+  train <- d %>% filter(date <= train_end)
+  test  <- d %>% filter(date  >  cutoff_date)
+
+  if (nrow(train) < 12) stop("Too few rows before cutoff-h for training.")
+  if (nrow(test)  <  1) stop("No test rows after cutoff.")
+
+  # --- sanitize predictor names like in rolling version ---
+  X_tr <- as.data.frame(train[, pred_cols, drop = FALSE])
+  pnames <- paste0("P", seq_len(ncol(X_tr)))
+  names(X_tr) <- pnames
+  df_tr <- data.frame(y = train[[target_col]], X_tr)
+
+  # cap number of components
+  Kcap <- min(Kmax, ncol(X_tr), nrow(X_tr) - 2)
+  if (Kcap <= 0) stop("Kcap <= 0 (not enough df/predictors).")
+
+  # fit PCR on TRAIN ONLY (same as rolling: scale=TRUE, validation='none')
+  fit <- pls::pcr(y ~ ., data = df_tr, scale = TRUE, validation = "none", ncomp = Kcap)
+
+  # ---- BIC over K = 0..Kcap on TRAIN (same logic as rolling) ----
+  n_tr <- nrow(df_tr)
+  y_tr <- df_tr$y
+  mu0  <- mean(y_tr, na.rm = TRUE)
+  rss0 <- sum((y_tr - mu0)^2, na.rm = TRUE)
+  bic0 <- n_tr * log(rss0 / n_tr) + 1 * log(n_tr)   # intercept-only
+
+  Ks    <- 1:Kcap
+  rssK  <- sapply(Ks, function(K) {
+    yhat_trK <- drop(predict(fit, ncomp = K, newdata = df_tr))
+    sum((y_tr - yhat_trK)^2, na.rm = TRUE)
+  })
+  bicK  <- n_tr * log(rssK / n_tr) + (Ks + 1) * log(n_tr)  # +1 for intercept
+
+  best_K <- which.min(c(bic0, bicK)) - 1  # 0..Kcap
+
+  # ---- predict TEST (once) ----
+  X_te <- as.data.frame(test[, pred_cols, drop = FALSE])
+  names(X_te) <- pnames                      # same sanitized names
+  df_te <- data.frame(y = NA_real_, X_te)    # dummy y for predict()
+
+  f_pcr <- if (best_K == 0) rep(mu0, nrow(df_te)) else drop(predict(fit, ncomp = best_K, newdata = df_te))
+  f_rw0 <- rep(0, nrow(df_te))
+
+  oos <- test %>% mutate(f_pcr = f_pcr, f_rw0 = f_rw0)
+
+  # ---- metrics (RMSE, R2 vs RW0, Directional Accuracy) ----
+  rmse <- function(y, yhat) sqrt(mean((y - yhat)^2, na.rm = TRUE))
+  y    <- oos[[target_col]]
+  e_p  <- y - oos$f_pcr
+  e_rw <- y - oos$f_rw0
+
+  da <- function(y, yhat, drop_zero = TRUE) {
+    sy <- sign(y); sf <- sign(yhat)
+    ok <- is.finite(sy) & is.finite(sf)
+    if (drop_zero) ok <- ok & sy != 0 & sf != 0
+    if (!any(ok)) return(NA_real_)
+    mean(sy[ok] == sf[ok])
+  }
+
+  summary <- tibble(
+    horizon            = paste0(h, "m"),
+    train_end          = train_end,
+    cutoff_date        = cutoff_date,
+    K_selected         = best_K,
+    n_train            = nrow(train),
+    n_test             = nrow(test),
+    test_start         = min(test$date),
+    test_end           = max(test$date),
+    RMSE_PCR           = rmse(y, oos$f_pcr),
+    RMSE_RW0           = rmse(y, oos$f_rw0),
+    R2_OOS_vs_RW0      = 1 - sum(e_p^2) / sum(e_rw^2),
+    DA_PCR             = da(y, oos$f_pcr, drop_zero = TRUE),
+    DA_RW0             = da(y, oos$f_rw0, drop_zero = TRUE)
+  )
+
+  list(summary = summary, oos = oos %>% select(date, !!target_col, f_pcr, f_rw0))
+}
 ```
 
 
+```{r}
+cutoff <- as.Date("2012-12-01")
+
+run_fixed <- function(path, target_col, h) {
+  base <- readr::read_csv(path, show_col_types = FALSE) %>%
+    mutate(date = as.Date(date)) %>%
+    arrange(date) %>%
+    # drop helper columns if present; harmless if absent
+    dplyr::select(-dplyr::any_of(c("current_fx_level","fx_level_fwd_1m","fx_level_fwd_3m","fx_level_fwd_6m","fx_level_fwd_12m"))) %>%
+    tidyr::drop_na(!!rlang::sym(target_col))
+
+  pred_cols <- setdiff(names(base), c("date", target_col))
+  pred_cols <- pred_cols[sapply(base[pred_cols], is.numeric)]  # numeric only
+
+  fixed_pcr_bic_pls(base, target_col, pred_cols, h, cutoff, Kmax = 10)
+}
+
+out_1m  <- run_fixed("../data/df_1m_lag.csv",  "Y_log_return_1m",  1)
+out_3m  <- run_fixed("../data/df_3m_lag.csv",  "Y_log_return_3m",  3)
+out_6m  <- run_fixed("../data/df_6m_lag.csv",  "Y_log_return_6m",  6)
+out_12m <- run_fixed("../data/df_12m_lag.csv", "Y_log_return_12m", 12)
+
+dplyr::bind_rows(
+  out_1m$summary,
+  out_3m$summary,
+  out_6m$summary,
+  out_12m$summary
+) %>% print()
+
+```
 
 
 
