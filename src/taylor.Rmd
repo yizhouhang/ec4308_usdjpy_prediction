@@ -95,8 +95,7 @@ jp_rate_raw = read_csv(jp_rate_path, show_col_types = FALSE) %>%
   select (date, i_jp_l1)
 ```
 
-#### FX return target
-
+#### Predictors Dataset
 ```{r}
 # ---- join regressors to returns
 regs <- us %>% select(date, pi_us) %>%
@@ -107,6 +106,46 @@ regs <- us %>% select(date, pi_us) %>%
   inner_join(jp_rate_raw %>% select(date, i_jp_l1), by = "date")
 ```
 
+#### Plotting Helper
+```{r}
+library(ggplot2)
+library(scales)
+plot_backtest <- function(oos, summary_row, target_col, h_label = NULL) {
+  stopifnot(all(c("date","f_tr","f_rw0") %in% names(oos)))
+  if (is.null(h_label)) h_label <- summary_row$h %||% summary_row$horizon %||% "h"
+
+  first_decision <- as.Date(summary_row$first_decision_date)
+  rmse_tr  <- signif(summary_row$RMSE_TR %||% summary_row$RMSE_AR1 %||% summary_row$RMSE_PCR, 3)
+  rmse_rw0 <- signif(summary_row$RMSE_RW0, 3)
+  da_tr    <- signif(summary_row$DA_TR %||% summary_row$DA_AR1 %||% summary_row$DA_PCR, 3)
+
+  df_long <- oos %>%
+    transmute(date,
+              Actual = .data[[target_col]],
+              `Model (TR/OLS)` = f_tr,
+              `RW(0)` = f_rw0) %>%
+    pivot_longer(-date, names_to = "series", values_to = "value")
+
+  ggplot(df_long, aes(date, value, color = series)) +
+    geom_hline(yintercept = 0, linewidth = 0.25, linetype = "dashed", color = "grey50") +
+    geom_vline(xintercept = first_decision, linewidth = 0.4, linetype = "dotdash", color = "grey40") +
+    geom_line(linewidth = 0.6, na.rm = TRUE) +
+    labs(
+      title    = paste0("Rolling Backtest (horizon = ", h_label, ")"),
+      subtitle = paste0("First decision date: ", first_decision,
+                        " | RMSE(Model) = ", rmse_tr,
+                        " | RMSE(RW0) = ", rmse_rw0,
+                        " | DA(Model) = ", da_tr),
+      x = NULL, y = "Log return",
+      color = NULL
+    ) +
+    scale_x_date(labels = label_date_short()) +
+    theme_minimal(base_size = 11) +
+    theme(legend.position = "top",
+          panel.grid.minor = element_blank())
+}
+```
+#### Forecast Horizon = 1 month; Validation = Rolling Window
 ```{r}
 fx <- read_csv("../data/df_1m_lag.csv", show_col_types = FALSE) %>%
   select(date, Y_log_return_1m) %>%
@@ -193,8 +232,18 @@ print(summary_tbl)
 # head(oos_1m)
 
 ```
+#### Plot 1-month backtest period = 10 years
+```{r}
+p_1m <- plot_backtest(
+  oos         = oos_1m,
+  summary_row = summary_tbl,            # one-row tibble
+  target_col  = "Y_log_return_1m",
+  h_label     = paste0(summary_tbl$h, "m")
+)
+print(p_1m)
+```
 
-
+#### Forecast Horizon = 3 months; Validation = Rolling Window
 ```{r}
 fx <- read_csv("../data/df_3m_lag.csv", show_col_types = FALSE) %>%
   select(date, Y_log_return_3m) %>%
@@ -281,6 +330,18 @@ print(summary_tbl)
 # head(oos_3m)
 ```
 
+#### Plot 1-month backtest period = 10 years
+```{r}
+p_3m <- plot_backtest(
+  oos         = oos_3m,
+  summary_row = summary_tbl,            # one-row tibble
+  target_col  = "Y_log_return_3m",
+  h_label     = paste0(summary_tbl$h, "m")
+)
+print(p_3m)
+```
+
+#### Forecast Horizon = 6 months; Validation = Rolling Window
 ```{r}
 fx <- read_csv("../data/df_6m_lag.csv", show_col_types = FALSE) %>%
   select(date, Y_log_return_6m) %>%
@@ -365,7 +426,18 @@ oos_6m      <- out$oos
 
 print(summary_tbl)
 ```
+#### Plot 1-month backtest period = 10 years
+```{r}
+p_6m <- plot_backtest(
+  oos         = oos_6m,
+  summary_row = summary_tbl,            # one-row tibble
+  target_col  = "Y_log_return_6m",
+  h_label     = paste0(summary_tbl$h, "m")
+)
+print(p_6m)
+```
 
+#### Forecast Horizon = 12 months; Validation = Rolling Window
 ```{r}
 fx <- read_csv("../data/df_12m_lag.csv", show_col_types = FALSE) %>%
   select(date, Y_log_return_12m) %>%
@@ -449,6 +521,16 @@ summary_tbl <- out$summary
 oos_12m      <- out$oos
 
 print(summary_tbl)
+```
+
+```{r}
+p_12m <- plot_backtest(
+  oos         = oos_12m,
+  summary_row = summary_tbl,            # one-row tibble
+  target_col  = "Y_log_return_12m",
+  h_label     = paste0(summary_tbl$h, "m")
+)
+print(p_12m)
 ```
 
 ```{r}
