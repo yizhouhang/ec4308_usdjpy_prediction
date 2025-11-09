@@ -1,0 +1,327 @@
+---
+title: "regression_edited"
+output: html_document
+date: "2025-11-09"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(HDeconometrics)  
+library(leaps)           
+library(forecast)        
+library(dplyr)
+library(tibble)
+library(purrr)
+
+```
+
+```{r}
+setwd("/Users/yizhouhang/Documents/Y4S1/EC4308/ec4308 project/src")
+df_1m <- read_csv("../data/df_1m_lag.csv", show_col_types = FALSE)
+df_3m <- read_csv("../data/df_3m_lag.csv", show_col_types = FALSE)
+df_6m <- read_csv("../data/df_6m_lag.csv", show_col_types = FALSE)
+df_12m <- read_csv("../data/df_12m_lag.csv", show_col_types = FALSE)
+```
+
+```{r}
+# ---------- Metrics & helpers ----------
+rmse <- function(p, t) sqrt(mean((t - p)^2))
+r2_insample <- function(y, p) {
+  den <- sum((y - mean(y))^2); if (den == 0) return(NA_real_)
+  1 - sum((y - p)^2) / den
+}
+r2_oos_trainmean <- function(y_te, p_te, y_tr) {
+  den <- sum((y_te - mean(y_tr))^2); if (den == 0) return(NA_real_)
+  1 - sum((y_te - p_te)^2) / den
+}
+scale_with <- function(M, center, scale) sweep(sweep(M, 2, center, "-"), 2, scale, "/")
+
+# Ensure model.matrix columns match regsubsets' coef names and pad missing with zeros
+safe_coef_predict <- function(regfit, X_s, id) {
+  cf <- coef(regfit, id = id)                       # named vector: "(Intercept)", vars...
+  mm <- cbind(`(Intercept)` = 1, as.matrix(X_s))    # name intercept exactly like regsubsets
+  missing <- setdiff(names(cf), colnames(mm))
+  if (length(missing)) {
+    add <- matrix(0, nrow = nrow(mm), ncol = length(missing),
+                  dimnames = list(NULL, missing))
+    mm <- cbind(mm, add)
+  }
+  mm <- mm[, names(cf), drop = FALSE]               # align order
+  as.numeric(mm %*% cf)
+}
+
+# ---------- Data prep ----------
+# Build X and y; drop date, current_fx_level, and any fx_level_fwd_*
+make_xy <- function(df, y_col, date_col = "date") {
+  stopifnot(y_col %in% names(df), date_col %in% names(df))
+  drop_cols <- c(date_col, "current_fx_level",
+                 grep("^fx_level_fwd", names(df), value = TRUE),
+                 y_col)
+  X <- df %>% select(-all_of(drop_cols)) %>% as.matrix()
+  y <- df[[y_col]]
+  dates <- as.Date(df[[date_col]])
+  list(X = X, y = y, dates = dates)
+}
+
+# Train/test split with zero-variance drop & scaling from TRAIN only
+prep_split <- function(X, y, dates, split_date) {
+  split_date <- as.Date(split_date)
+  is_test  <- dates >= split_date
+  is_train <- !is_test
+
+  X_tr <- X[is_train, , drop = FALSE]; y_tr <- y[is_train]
+  X_te <- X[is_test,  , drop = FALSE]; y_te <- y[is_test]
+
+  sds  <- apply(X_tr, 2, sd)
+  keep <- which(is.finite(sds) & sds > 0)
+  X_tr <- X_tr[, keep, drop = FALSE]
+  X_te <- X_te[, keep, drop = FALSE]
+
+  # legal, unique, synced names
+  cn <- make.names(colnames(X_tr), unique = TRUE)
+  colnames(X_tr) <- cn; colnames(X_te) <- cn
+
+  mu  <- colMeans(X_tr)
+  sdv <- apply(X_tr, 2, sd)
+  X_tr_s <- scale_with(X_tr, mu, sdv)
+  X_te_s <- scale_with(X_te, mu, sdv)
+
+  list(X_tr_s = X_tr_s, y_tr = y_tr, X_te_s = X_te_s, y_te = y_te, cols = cn)
+}
+
+# ---------- Models (train/test) ----------
+fit_predict_ols <- function(X_tr_s, y_tr, X_te_s) {
+  df_tr <- data.frame(y = y_tr, as.data.frame(X_tr_s))
+  df_te <- data.frame(as.data.frame(X_te_s))
+  fit   <- lm(y ~ ., data = df_tr)
+  list(
+    pred_tr = predict(fit, newdata = df_tr),
+    pred_te = predict(fit, newdata = df_te),
+    selected = colnames(X_tr_s)
+  )
+}
+
+fit_predict_subset_forward_ic <- function(X_tr_s, y_tr, X_te_s,
+                                          criterion = c("BIC","AIC"),
+                                          nvmax = 25, max_iter = 2) {
+  criterion <- match.arg(criterion)
+  stopifnot(identical(colnames(X_tr_s), colnames(X_te_s)))
+  n  <- nrow(X_tr_s)
+  p  <- ncol(X_tr_s)
+  nv <- min(nvmax, p)
+
+  df_tr <- data.frame(y = y_tr, as.data.frame(X_tr_s))
+  regfit <- regsubsets(y ~ ., data = df_tr, nvmax = nv, method = "forward")
+  s <- summary(regfit)
+  rss <- s$rss
+
+  # brief fixed-point update on sigma^2 for stability
+  sig2 <- stats::var(y_tr); prev_k <- NULL
+  for (iter in 0:max_iter) {
+    pen <- if (criterion == "BIC") log(n) else 2
+    ic  <- rss / n + pen * sig2 * ((1:nv) / n)
+    k   <- which.min(ic)
+    sig2_new <- rss[k] / (n - k - 1)
+    if (!is.null(prev_k) && k == prev_k) break
+    prev_k <- k; sig2 <- sig2_new
+  }
+
+  pred_tr <- safe_coef_predict(regfit, X_tr_s, prev_k)
+  pred_te <- safe_coef_predict(regfit, X_te_s, prev_k)
+  vars    <- setdiff(names(coef(regfit, id = prev_k)), "(Intercept)")
+  list(pred_tr = pred_tr, pred_te = pred_te, selected = vars, k = prev_k)
+}
+
+# ic.glmnet (IC-based lambda; alpha=1 LASSO, 0 Ridge, (0,1) EN)
+fit_predict_ic_glmnet <- function(X_tr_s, y_tr, X_te_s, alpha = 1) {
+  fit <- HDeconometrics::ic.glmnet(X_tr_s, y_tr, family = "gaussian",
+                                   alpha = alpha, standardize = FALSE)
+  b <- as.numeric(coef(fit))                 # [beta0, beta...]
+  pred_tr <- as.numeric(drop(cbind(1, X_tr_s) %*% b))
+  pred_te <- as.numeric(drop(cbind(1, X_te_s) %*% b))
+  sel_idx <- which(b[-1] != 0)
+  sel_nm  <- if (length(sel_idx)) colnames(X_tr_s)[sel_idx] else character(0)
+  list(pred_tr = pred_tr, pred_te = pred_te, selected = sel_nm,
+       intercept = b[1], beta = b[-1])
+}
+
+# ---------- Single-horizon evaluation wrapper ----------
+evaluate_train_test <- function(df, y_col, split_date,
+                                nvmax = 25, en_alpha = 0.5) {
+  xy <- make_xy(df, y_col)
+  sp <- prep_split(xy$X, xy$y, xy$dates, split_date)
+
+  # fits
+  ols     <- fit_predict_ols(sp$X_tr_s, sp$y_tr, sp$X_te_s)
+  sub_bic <- fit_predict_subset_forward_ic(sp$X_tr_s, sp$y_tr, sp$X_te_s, "BIC", nvmax)
+  sub_aic <- fit_predict_subset_forward_ic(sp$X_tr_s, sp$y_tr, sp$X_te_s, "AIC", nvmax)
+  lasso   <- fit_predict_ic_glmnet(sp$X_tr_s, sp$y_tr, sp$X_te_s, alpha = 1)
+  ridge   <- fit_predict_ic_glmnet(sp$X_tr_s, sp$y_tr, sp$X_te_s, alpha = 0)
+  enet    <- fit_predict_ic_glmnet(sp$X_tr_s, sp$y_tr, sp$X_te_s, alpha = en_alpha)
+
+  summarize <- function(name, pr) {
+    data.frame(
+      model   = name,
+      rmse_tr = rmse(pr$pred_tr, sp$y_tr),
+      rmse_te = rmse(pr$pred_te, sp$y_te),
+      r2_in   = r2_insample(sp$y_tr, pr$pred_tr),
+      r2_oos  = r2_oos_trainmean(sp$y_te, pr$pred_te, sp$y_tr),
+      stringsAsFactors = FALSE
+    )
+  }
+
+  tbl <- bind_rows(
+    summarize("OLS",         ols),
+    summarize("Subset-BIC",  sub_bic),
+    summarize("Subset-AIC",  sub_aic),
+    summarize("LASSO(IC)",   lasso),
+    summarize("Ridge(IC)",   ridge),
+    summarize(paste0("EN(IC,a=", en_alpha, ")"), enet)
+  )
+
+  # DM vs Random Walk (0 return)
+  rw <- rep(0, length(sp$y_te))
+  dm_res <- list(
+    OLS        = forecast::dm.test(sp$y_te - ols$pred_te,     sp$y_te - rw, h = 1, power = 2),
+    Subset_BIC = forecast::dm.test(sp$y_te - sub_bic$pred_te, sp$y_te - rw, h = 1, power = 2),
+    Subset_AIC = forecast::dm.test(sp$y_te - sub_aic$pred_te, sp$y_te - rw, h = 1, power = 2),
+    LASSO      = forecast::dm.test(sp$y_te - lasso$pred_te,   sp$y_te - rw, h = 1, power = 2),
+    Ridge      = forecast::dm.test(sp$y_te - ridge$pred_te,   sp$y_te - rw, h = 1, power = 2),
+    EN         = forecast::dm.test(sp$y_te - enet$pred_te,    sp$y_te - rw, h = 1, power = 2)
+  )
+
+  list(
+    summary  = tbl,
+    selected = list(
+      subset_bic = sub_bic$selected,
+      subset_aic = sub_aic$selected,
+      lasso      = lasso$selected,
+      ridge      = {
+        rr <- fit_predict_ic_glmnet(sp$X_tr_s, sp$y_tr, sp$X_te_s, alpha = 0)
+        names(which(rr$beta != 0))
+      },
+      en         = enet$selected
+    ),
+    dm = dm_res
+  )
+}
+
+# ---------- Convenience: run across horizons ----------
+# Call this with any of your 1m/3m/6m/12m data frames by changing y_col
+run_all_train_test <- function(df, y_col, split_date,
+                               nvmax = 25, en_alpha = 0.5) {
+  evaluate_train_test(df, y_col, split_date, nvmax = nvmax, en_alpha = en_alpha)
+}
+
+
+```
+
+```{r}
+split_date <- as.Date("2012-01-01")
+
+# 1-month horizon
+res_1m <- run_all_models(df_1m, y_col = "Y_log_return_1m",
+                         split_date = split_date, window = 120, en_alpha = 0.5, nvmax = 25)
+
+# 3-month horizon
+res_3m <- run_all_models(df_3m, y_col = "Y_log_return_3m",
+                         split_date = split_date, window = 120, en_alpha = 0.5, nvmax = 25)
+
+# 6-month horizon
+res_6m <- run_all_models(df_6m, y_col = "Y_log_return_6m",
+                         split_date = split_date, window = 120, en_alpha = 0.5, nvmax = 25)
+
+# 12-month horizon
+res_12m <- run_all_models(df_12m, y_col = "Y_log_return_12m",
+                          split_date = split_date, window = 120, en_alpha = 0.5, nvmax = 25)
+
+# Peek at summaries
+res_1m$static$summary
+res_1m$static$selected
+res_1m$rolling$lasso$r2_oos
+res_1m$rolling$subset_bic$dm_test
+
+```
+```{r}
+res_12m$static$summary
+res_12m$static$selected
+res_12m$rolling$lasso$r2_oos
+res_12m$rolling$subset_bic$dm_test
+```
+
+
+```{r}
+# run (train/test only)
+res_1m <- run_all_train_test(df_1m, y_col = "Y_log_return_1m",
+                             split_date = as.Date("2012-01-01"))
+
+# summary table (RMSE/R^2 etc.)
+res_1m$summary
+
+# selected variables by method
+res_1m$selected
+
+# DM tests vs RW(0)
+res_1m$dm$OLS
+res_1m$dm$Subset_BIC
+res_1m$dm$Subset_AIC
+res_1m$dm$LASSO
+res_1m$dm$Ridge
+res_1m$dm$EN
+
+```
+```{r}
+# --- drop-in helpers (no refit needed) ---
+dir_acc <- function(y, p, count_zeros = FALSE) {
+  sy <- sign(y); sp <- sign(p)
+  keep <- if (count_zeros) (is.finite(sy) & is.finite(sp)) else ((sy != 0) & (sp != 0))
+  if (!any(keep)) return(list(da = NA_real_, n = 0, pval = NA_real_))
+  hits <- sum(sy[keep] == sp[keep])
+  n    <- sum(keep)
+  da   <- hits / n
+  bt   <- binom.test(hits, n, p = 0.5, alternative = "two.sided")
+  list(da = da, n = n, pval = as.numeric(bt$p.value))
+}
+
+# Build y_te from your df/y_col/split_date (no scaling, no refit)
+get_y_te <- function(df, y_col, split_date, date_col = "date") {
+  dates <- as.Date(df[[date_col]])
+  df[[y_col]][dates >= as.Date(split_date)]
+}
+
+# Add DA columns to an existing summary, using your saved test predictions
+# preds_list must be a *named* list: names matching the 'model' column in your summary
+add_da_to_summary <- function(summary_df, y_te, preds_list, count_zeros = FALSE) {
+  da_rows <- lapply(names(preds_list), function(m) {
+    pr <- preds_list[[m]]
+    if (length(pr) != length(y_te)) {
+      warning(sprintf("Skipping '%s': length(pred) != length(y_te)", m))
+      return(NULL)
+    }
+    da <- dir_acc(y_te, pr, count_zeros = count_zeros)
+    data.frame(model = m, da_test = da$da, da_n = da$n, da_pval = da$pval, stringsAsFactors = FALSE)
+  })
+  da_tbl <- do.call(rbind, Filter(Negate(is.null), da_rows))
+  if (is.null(da_tbl) || nrow(da_tbl) == 0) return(summary_df)
+  dplyr::left_join(summary_df, da_tbl, by = "model")
+}
+
+```
+
+```{r}
+y_te <- get_y_te(df_1m, y_col = "Y_log_return_1m", split_date = as.Date("2012-01-01"))
+preds <- list(
+  "Subset-BIC"       = sub_bic_pred_te,
+  "Subset-AIC"       = sub_aic_pred_te,
+  "LASSO(IC)"        = lasso_pred_te,
+  "Ridge(IC)"        = ridge_pred_te,
+  "EN(IC,a=0.5)"     = en_pred_te
+)
+res_1m$summary <- add_da_to_summary(res_1m$summary, y_te, preds, count_zeros = FALSE)
+res_1m$summary
+
+```
+
