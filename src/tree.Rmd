@@ -8,235 +8,448 @@ date: "2025-11-06"
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
-```{r}
-# load packages
+```{r load packages }
 # install.packages("randomForest")
 # install.packages("gbm")
 library(randomForest)  # bagging & random forest
 library(gbm)           # boosting
 ```
 
-```{r}
-# setwd("/Users/judy/Desktop/EC4308/ec4308_usdjpy_prediction/src")
+```{r load datasets}
+# getwd()
+setwd("/Users/judy/Desktop/EC4308/ec4308_usdjpy_prediction/src")
 
 # read datasets (different horizons)
-lag1m = read.csv("../data/df_1m_lag.csv")
-lag3m = read.csv("../data/df_3m_lag.csv")
-lag6m = read.csv("../data/df_6m_new.csv")
-lag12m = read.csv("../data/df_12m_new.csv")
+pred1m = read.csv("../data/df_1m_lag.csv")
+pred3m = read.csv("../data/df_3m_lag.csv")
+pred6m = read.csv("../data/df_6m_lag.csv")
+pred12m = read.csv("../data/df_12m_lag.csv")
 
-for (d in c("lag1m", "lag3m", "lag6m", "lag12m")) {
+for (d in c("pred1m", "pred3m", "pred6m", "pred12m")) {
   df <- get(d)                  # retrieve the dataset by name
   df[[1]] <- as.Date(df[[1]])   # convert first column to Date
   df <- df[order(df$date), ]    # sort ascending
   assign(d, df)                 # assign it back to the variable name
 }
 ```
-
-# test for rf_rolling
+# Train/test split
+## 1) Random forest train/test
 ```{r}
-data <- lag1m 
-data_name <- deparse(substitute(data))
-window_size <- 120 # 10 years
-y_col <- 3
+rf_train_test <- function(data, y_col = 4) {
+  cutoff_date = "2012-12-31"
+  
+  data <- data[order(data[[1]]), ]
+  train <- subset(data, data[[1]] <= as.Date(cutoff_date))
+  test  <- subset(data, data[[1]] >  as.Date(cutoff_date))
+  
 
-y_all <- data[[y_col]]
-X_all <- data[, -c(1, 2, y_col), drop = FALSE]
+  X_train <- train[, -c(1, 2, 3, y_col), drop = FALSE]
+  y_train <- train[[y_col]]
+  X_test  <- test[, -c(1, 2, 3, y_col), drop = FALSE]
+  y_test  <- test[[y_col]]
 
-n <- nrow(data)
-nprev <- n - window_size  # nprev: number of out-of-sample forecasts (last nprev rows)
+  # fit rf
+  # ntree, mtry and nodesize use default values
+  rf_model <- randomForest(
+    x = X_train,
+    y = y_train,
+    importance = TRUE
+  )
 
-preds <- rep(NA_real_, nprev)
-actual <- y_all[(window_size + 1):n]
-importance_list <- vector("list", nprev)
 
-cat("Rolling forecasts for", data_name, "started... total =", nprev, "steps\n")
+  y_pred <- predict(rf_model, newdata = X_test)
 
-for (i in seq_len(nprev)) {
-    # define training window
-    start <- i
-    end <- i + window_size - 1
-    
-    X_train <- X_all[start:end, , drop = FALSE]
-    y_train <- y_all[start:end]
-    X_pred  <- X_all[end + 1, , drop = FALSE]
-    
-    # fit rf model
-    rf <- randomForest(x = X_train, y = y_train, importance = TRUE)
-    
-    # Forecast next observation
-    preds[i] <- predict(rf, X_pred)
-    importance_list[[i]] <- importance(rf)
-    
-    if (i %% 10 == 0 || i == nprev) {
-      cat("Iteration", i, "of", nprev, "done\n")
-    }
-  }
-```
-```{r}
-# evaluation
-rmse <- sqrt(mean((actual - preds)^2))
-mae  <- mean(abs(actual - preds))
-cat("Rolling RMSE:", round(rmse, 6), "| MAE:", round(mae, 6), "\n")
+  # evaluation
+  rmse <- sqrt(mean((y_pred - y_test)^2))
+  mae  <- mean(abs(y_pred - y_test))
 
-results <- data.frame(
-  Date = data[(window_size + 1):n, 1],
-  Actual = actual,
-  Forecast = preds
-)
+  # directional accuracy: record 1 if both > 0, record 0 if both < 0
+  da <- ifelse((y_pred > 0 & y_test > 0) | (y_pred < 0 & y_test < 0), 1, 0)
+  mean_da <- mean(da)
 
-# plot actual vs forecast
-plot(results$Date, results$Actual, type = "l", main = "Rolling RF Forecast vs Actual",
-     ylab = "Y", xlab = "Date")
-lines(results$Date, results$Forecast, col = "red")
-legend("topleft", legend = c("Actual", "Forecast"),
-       col = c("black", "red"), lty = 1)
-
+  # results
+  results <- list(
+    model = rf_model,
+    predictions = y_pred,
+    actuals = y_test,
+    rmse = rmse,
+    mae = mae,
+    directional_accuracy = mean_da
+  )
+  return(results)
+}
 
 ```
 
-# Random Forest
+### Random forest train/test result
 ```{r}
-rolling_rf_rmse <- function(data, window_size=120, y_col = 3) {
-  data_name <- deparse(substitute(data))
+rf_1m_traintest <- rf_train_test(data=pred1m)
+# rmse = 0.02234437
+# da = 0.5333333
+rf_3m_traintest <- rf_train_test(data=pred3m)
+# rmse = 0.04976673
+# da = 0.4416667
+rf_6m_traintest <- rf_train_test(data=pred6m)
+# rmse = 0.0754562
+# da = 0.4
+rf_12m_traintest <- rf_train_test(data=pred12m)
+# rmse = 0.1085046
+# da = 0.325
+```
+
+### Save rf train/test results
+```{r}
+results_list <- list()
+
+for (d in c("pred1m", "pred3m", "pred6m", "pred12m")) {
+  df <- get(d)
+  res <- rf_train_test(df)
+  results_list[[d]] <- res
+}
+
+save(results_list, file = "/Users/judy/Desktop/EC4308/ec4308_usdjpy_result/rf_train_test_results_all.RData")
+
+# load("rf_train_test_results_all.RData")
+# names(results_list)
+```
+
+### Variable importance
+```{r}
+setwd("/Users/judy/Desktop/EC4308/ec4308_usdjpy_result")
+rf_train_test_results <- get(load("rf_train_test_results_all.RData"))
+rf_1m_model <- rf_train_test_results$pred1m$model
+
+## !!!!!!
+var_used <- table(rf_1m_model$forest$bestvar)
+names(var_used) <- all.vars(rf_1m_model$terms)[-1]
+sort(var_used, decreasing = TRUE)[1:10]
+```
+
+## 2) Bagging train/test
+```{r}
+bag_train_test <- function(data, y_col = 4) {
+  cutoff_date = "2012-12-31"
+  
+  data <- data[order(data[[1]]), ]
+  train <- subset(data, data[[1]] <= as.Date(cutoff_date))
+  test  <- subset(data, data[[1]] >  as.Date(cutoff_date))
+  
+
+  X_train <- train[, -c(1, 2, 3, y_col), drop = FALSE]
+  y_train <- train[[y_col]]
+  X_test  <- test[, -c(1, 2, 3, y_col), drop = FALSE]
+  y_test  <- test[[y_col]]
+
+  # fit rf
+  # ntree, mtry and nodesize use default values
+  rf_model <- randomForest(
+    x = X_train,
+    y = y_train,
+    mtry = ncol(X_train),
+    importance = TRUE
+  )
+
+
+  y_pred <- predict(rf_model, newdata = X_test)
+
+  # evaluation
+  rmse <- sqrt(mean((y_pred - y_test)^2))
+  mae  <- mean(abs(y_pred - y_test))
+
+  # directional accuracy: record 1 if both > 0, record 0 if both < 0
+  da <- ifelse((y_pred > 0 & y_test > 0) | (y_pred < 0 & y_test < 0), 1, 0)
+  mean_da <- mean(da)
+
+  # results
+  results <- list(
+    model = rf_model,
+    predictions = y_pred,
+    actuals = y_test,
+    rmse = rmse,
+    mae = mae,
+    directional_accuracy = mean_da
+  )
+  return(results)
+}
+```
+
+### Bagging train/test result
+```{r}
+bag_1m_traintest <- bag_train_test(data=pred1m)
+# rmse = 
+# da = 
+bag_3m_traintest <- bag_train_test(data=pred3m)
+# rmse = 
+# da = 
+bag_6m_traintest <- bag_train_test(data=pred6m)
+# rmse = 
+# da = 
+bag_12m_traintest <- bag_train_test(data=pred12m)
+# rmse = 
+# da = 
+```
+
+### Save bag train/test results
+```{r}
+results_list_bag_traintest <- list()
+
+for (d in c("pred1m", "pred3m", "pred6m", "pred12m")) {
+  df <- get(d)
+  res <- bag_train_test(df)
+  results_list_bag_traintest[[d]] <- res
+}
+
+save(results_list_bag_traintest, file = "/Users/judy/Desktop/EC4308/ec4308_usdjpy_result/bag_train_test_results_all.RData")
+
+# load("bag_train_test_results_all.RData")
+# names(results_list_bag_traintest)
+```
+
+# Rolling window
+## 1) Random forest rolling window
+```{r}
+rolling_rf_rmse <- function(data, data_name, nprev = 120, y_col = 4) {
   
   y_all <- data[[y_col]]
-  X_all <- data[, -c(1, 2, y_col), drop = FALSE]
+  X_all <- data[, -c(1, 2, 3, y_col), drop = FALSE]
   
   n <- nrow(data)
-  nprev <- n - window_size  # nprev: number of out-of-sample forecasts (last nprev rows)
+  stopifnot(n > nprev)
   
   preds <- rep(NA_real_, nprev)
-  actual <- y_all[(window_size + 1):n]
+  actual <- y_all[(n - nprev + 1):n]
   importance_list <- vector("list", nprev)
   
   cat("Rolling forecasts for", data_name, "started... total =", nprev, "steps\n")
 
-  for (i in seq_len(nprev)) {
-      # define training window
-      start <- i
-      end <- i + window_size - 1
-      
-      X_train <- X_all[start:end, , drop = FALSE]
-      y_train <- y_all[start:end]
-      X_pred  <- X_all[end + 1, , drop = FALSE]
-      
-      # fit rf model
-      rf <- randomForest(x = X_train, y = y_train, importance = TRUE)
-      
-      # Forecast next observation
-      preds[i] <- predict(rf, X_pred)
-      importance_list[[i]] <- importance(rf)
-      
-      if (i %% 10 == 0 || i == nprev) {
-        cat("Iteration", i, "of", nprev, "done\n")
-      }
+  for (i in nprev:1) {
+    # define rolling window
+    start_idx <- 1 + nprev - i
+    end_idx   <- n - i
+    
+    X_train <- X_all[start_idx:end_idx, , drop = FALSE]
+    y_train <- y_all[start_idx:end_idx]
+    X_pred  <- X_all[end_idx + 1, , drop = FALSE]
+    
+    # fit rf
+    rf <- randomForest(x = X_train, y = y_train, importance = TRUE)
+    
+    # forecast next obs
+    preds[(1 + nprev - i)] <- predict(rf, X_pred)
+    importance_list[[i]] <- importance(rf)
+    
+    if (i %% 10 == 0 || i == 1) {
+      cat("Iteration", (1 + nprev - i), "of", nprev, "done\n")
+    }
   }
   
   # evaluation
   rmse <- sqrt(mean((actual - preds)^2))
   mae  <- mean(abs(actual - preds))
-  cat("Rolling RMSE:", round(rmse, 6), "| MAE:", round(mae, 6), "\n")
-  
+  da <- ifelse((preds > 0 & actual > 0) | (preds < 0 & actual < 0), 1, 0)
+  mean_da <- mean(da)
+  cat("Rolling RMSE:", round(rmse, 6), "| MAE:", round(mae, 6), "| DA:", mean_da, "\n")
+
+  # combine results
   results <- data.frame(
-    Date = data[(window_size + 1):n, 1],
+    Date = data[(n - nprev + 1):n, 1],
     Actual = actual,
     Forecast = preds
   )
   
   # plot actual vs forecast
-  plot(results$Date, results$Actual, type = "l", main = "Rolling RF Forecast vs Actual",
+  plot(results$Date, results$Actual, type = "l",
+       main = paste("Rolling RF Forecast vs Actual —", data_name),
        ylab = "Y", xlab = "Date")
   lines(results$Date, results$Forecast, col = "red")
   legend("topleft", legend = c("Actual", "Forecast"),
          col = c("black", "red"), lty = 1)
+  
+  return(list(
+    results = results,
+    importance_history = importance_list,
+    rmse = rmse,
+    mae = mae,
+    da = mean_da
+  ))
 }
+
 
 ```
 
+### combine all variable importances
+```{r}
+# combine all variable importances into one table
+aggregate_importance <- function(importance_list) {
+  # convert each importance matrix into a data frame with variable names
+  imp_dfs <- lapply(importance_list, function(x) {
+    df <- as.data.frame(x)
+    df$Variable <- rownames(x)
+    rownames(df) <- NULL
+    df
+  })
+  
+  # stack all data frames together
+  imp_all <- do.call(rbind, imp_dfs)
+  
+  # aggregate by variable name (average across rolling windows)
+  imp_summary <- aggregate(. ~ Variable, data = imp_all, FUN = mean, na.rm = TRUE)
+  
+  # sort by average %IncMSE (most important first)
+  imp_summary <- imp_summary[order(-imp_summary$`%IncMSE`), ]
+  
+  return(imp_summary)
+  
+  # %IncMSE: Percent Increase in Mean Squared Error
+  # IncNodePurity: Increase in Node Purity
+}
+
+```
 
 ```{r}
 # rolling-window forecasts at different horizons
-rf_1m <- rolling_rf_rmse(data=lag1m)
-rf_3m <- rolling_rf_rmse(data=lag3m)
-rf_6m <- rolling_rf_rmse(data=lag6m)
-rf_12m <- rolling_rf_rmse(data=lag12m)
+rf_1m_roll <- rolling_rf_rmse(data=pred1m)
+rf_1m_roll_importance <- aggregate_importance(rf_1m_roll$importance_history)
+rf_3m_roll <- rolling_rf_rmse(data=pred3m)
+rf_3m_roll_importance <- aggregate_importance(rf_3m_roll$importance_history)
+rf_6m_roll <- rolling_rf_rmse(data=pred6m)
+rf_6m_roll_importance <- aggregate_importance(rf_6m_roll$importance_history)
+rf_12m_roll <- rolling_rf_rmse(data=pred12m)
+rf_12m_roll_importance <- aggregate_importance(rf_12m_roll$importance_history)
+```
+
+### Save rf rolling results
+```{r}
+# results_list <- list()
+#"pred1m", "pred6m", "pred12m"
+for (d in c("pred3m")) {
+  df <- get(d)
+  res <- rolling_rf_rmse(data=df, data_name=d)
+  results_list[[d]] <- res
+}
+
+save(results_list, file = "/Users/judy/Desktop/EC4308/ec4308_usdjpy_result/rf_rolling_results_3-12m.RData")
+
+# load("../model/rf_rolling_results_all.RData")
+
 ```
 
 
-# Bagging
+
+## 2) Bagging rolling window
 ```{r}
-rolling_bag_rmse <- function(data, window_size=120, y_col = 3) {
-  data_name <- deparse(substitute(data))
+# bag <- randomForest(x = X_train, y = y_train, mtry = ncol(X_train), importance = TRUE)
+rolling_bag_rmse <- function(data, data_name, nprev = 120, y_col = 4) {
   
   y_all <- data[[y_col]]
-  X_all <- data[, -c(1, 2, y_col), drop = FALSE]
+  X_all <- data[, -c(1, 2, 3, y_col), drop = FALSE]
   
   n <- nrow(data)
-  nprev <- n - window_size  # nprev: number of out-of-sample forecasts (last nprev rows)
+  stopifnot(n > nprev)
   
   preds <- rep(NA_real_, nprev)
-  actual <- y_all[(window_size + 1):n]
+  actual <- y_all[(n - nprev + 1):n]
   importance_list <- vector("list", nprev)
   
   cat("Rolling forecasts for", data_name, "started... total =", nprev, "steps\n")
 
-  for (i in seq_len(nprev)) {
-      # define training window
-      start <- i
-      end <- i + window_size - 1
-      
-      X_train <- X_all[start:end, , drop = FALSE]
-      y_train <- y_all[start:end]
-      X_pred  <- X_all[end + 1, , drop = FALSE]
-      
-      # fit rf model
-      rf <- randomForest(x = X_train, y = y_train, mtry = ncol(X_train), importance = TRUE)
-      
-      # Forecast next observation
-      preds[i] <- predict(rf, X_pred)
-      importance_list[[i]] <- importance(rf)
-      
-      if (i %% 10 == 0 || i == nprev) {
-        cat("Iteration", i, "of", nprev, "done\n")
-      }
+  for (i in nprev:1) {
+    # define rolling window
+    start_idx <- 1 + nprev - i
+    end_idx   <- n - i
+    
+    X_train <- X_all[start_idx:end_idx, , drop = FALSE]
+    y_train <- y_all[start_idx:end_idx]
+    X_pred  <- X_all[end_idx + 1, , drop = FALSE]
+    
+    # fit bagging
+    bag <- randomForest(x = X_train, y = y_train, mtry = ncol(X_train), importance = TRUE)
+    
+    # forecast next obs
+    preds[(1 + nprev - i)] <- predict(bag, X_pred)
+    importance_list[[i]] <- importance(bag)
+    
+    if (i %% 10 == 0 || i == 1) {
+      cat("Iteration", (1 + nprev - i), "of", nprev, "done\n")
+    }
   }
   
   # evaluation
   rmse <- sqrt(mean((actual - preds)^2))
   mae  <- mean(abs(actual - preds))
-  cat("Rolling RMSE:", round(rmse, 6), "| MAE:", round(mae, 6), "\n")
-  
+  da <- ifelse((preds > 0 & actual > 0) | (preds < 0 & actual < 0), 1, 0)
+  mean_da <- mean(da)
+  cat("Rolling RMSE:", round(rmse, 6), "| MAE:", round(mae, 6), "| DA:", mean_da, "\n")
+
+  # combine results
   results <- data.frame(
-    Date = data[(window_size + 1):n, 1],
+    Date = data[(n - nprev + 1):n, 1],
     Actual = actual,
     Forecast = preds
   )
   
   # plot actual vs forecast
-  plot(results$Date, results$Actual, type = "l", main = "Rolling RF Forecast vs Actual",
+  plot(results$Date, results$Actual, type = "l",
+       main = paste("Rolling Bagging Forecast vs Actual —", data_name),
        ylab = "Y", xlab = "Date")
   lines(results$Date, results$Forecast, col = "red")
   legend("topleft", legend = c("Actual", "Forecast"),
          col = c("black", "red"), lty = 1)
+  
+  return(list(
+    results = results,
+    importance_history = importance_list,
+    rmse = rmse,
+    mae = mae,
+    da = mean_da
+  ))
+}
+```
+
+```{r}
+bag_1m_roll <- rolling_bag_rmse(data=pred1m)
+bag_1m_roll_importance <- aggregate_importance(bag_1m_roll$importance_history)
+bag_3m_roll <- rolling_bag_rmse(data=pred3m)
+bag_3m_roll_importance <- aggregate_importance(bag_3m_roll$importance_history)
+bag_6m_roll <- rolling_bag_rmse(data=pred6m)
+bag_6m_roll_importance <- aggregate_importance(bag_6m_roll$importance_history)
+bag_12m_roll <- rolling_bag_rmse(data=pred12m)
+bag_12m_roll_importance <- aggregate_importance(bag_12m_roll$importance_history)
+```
+
+### Save bag rolling results
+```{r}
+results_list_bag_roll <- list()
+
+for (d in c("pred1m", "pred3m", "pred6m", "pred12m")) {
+  df <- get(d)
+  res <- rolling_bag_rmse(data=df, data_name=d)
+  results_list_bag_roll[[d]] <- res
 }
 
-```
+save(results_list_bag_roll, file = "/Users/judy/Desktop/EC4308/ec4308_usdjpy_result/bag_rolling_results_all.RData")
 
-```{r}
-bag_1m  <- rolling_bag_rmse(data=lag1m)
-bag_3m  <- rolling_bag_rmse(data=lag3m)
-bag_6m  <- rolling_bag_rmse(data=lag6m)
-bag_12m <- rolling_bag_rmse(data=lag12m)
+# load("../model/bag_rolling_results_all.RData")
+
 ```
 
 ```{r}
 
 ```
 
-
+# All tree-based models
 ```{r}
+# random forest train/test
+load("rf_train_test_results_all.RData")
 
+# random forest rolling window
+load("../model/rf_rolling_results_all.RData")
+
+# bagging forest train/
+load("bag_train_test_results_all.RData")
+
+# bagging forest rolling window
+load("../model/bag_rolling_results_all.RData")
 ```
 
 
