@@ -1,0 +1,129 @@
+---
+title: "DM"
+output: html_document
+date: "2025-11-11"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+#install.packages("sandwich")
+library(sandwich) #library to estimate variance for DM test regression using NeweyWest()
+
+########### 1m: AR1 vs ANN ###########
+# squared loss for different methods
+lpl1c=(oosy-prlasso1c$pred)^2
+lrf1c=(oosy-rf1c$pred)^2
+# loss differentials for different horizons (PLASSO-RF)
+dplrf1=lpl1c-lrf1c
+
+#Create ts object containing loss differentials
+dtplrf.ts=ts(cbind(dplrf1,dplrf3,dplrf6,dplrf12), start=c(2001,1), end=c(2015,12), freq=12)
+#Plot them to examine stationarity:
+colnames(dtplrf.ts)=c("1-step dt","3-step dt","6-step dt","12-step dt")
+plot.ts(dtplrf.ts, main="Loss differential PLASSO-RF",cex.axis=1.8)
+
+#DM regressions
+dmplrf1=lm(dplrf1~1) #regression
+acf(dmplrf1$residuals) #check serial correlation of residuals - number of significant autocorrelations is a good guess for number lags included in the HAC variance estimator
+dmplrf1$coefficients/sqrt(NeweyWest(dmplrf1,lag=6)) #form the DM t-statistic
+
+```
+
+```{r}
+########### 1m: AR1 vs ANN ###########
+# squared loss for different methods
+setwd("/Users/judy/Desktop/EC4308/ec4308_usdjpy_prediction/src")
+ar1_1m <- read.csv("../data/ar1_err_tbl1.csv")
+ar1_1m_rmse <- ar1_1m$error^2
+ann_1m <- read.csv("../data/ann_err_tbl1.csv")
+ann_1m_rmse <- ann_1m$error^2
+
+# loss differentials for different horizons
+ld_1m <- ar1_1m_rmse - ann_1m_rmse
+
+#Create ts object containing loss differentials
+rmse_differential=ts(ld_1m, start=c(2013,1,1), end=c(2022,12,1), freq=12)
+#Plot them to examine stationarity:
+plot.ts(rmse_differential, main="Loss differential AR1 vs ANN - 1m",cex.axis=1.8)
+
+#DM regressions
+dm1m=lm(ld_1m~1) #regression
+acf(dm1m$residuals) #check serial correlation of residuals - number of significant autocorrelations is a good guess for number lags included in the HAC variance estimator
+dm1m$coefficients/sqrt(NeweyWest(dm1m,lag=4)) #form the DM t-statistic
+# DM t-statistic = -0.04543917
+```
+
+```{r}
+########### 3m: RF(tune) vs ANN ###########
+# squared loss for different methods
+setwd("/Users/judy/Desktop/EC4308/ec4308_usdjpy_prediction/src")
+rf_3m <- read.csv("../data/rf_tune_err_3m.csv")
+rf_3m_rmse <- rf_3m$error^2
+ann_3m <- read.csv("../data/ann_err_tbl3.csv")
+ann_3m_rmse <- ann_3m$error^2
+
+# loss differentials for different horizons
+ld_3m <- rf_3m_rmse - ann_3m_rmse
+
+#Create ts object containing loss differentials
+rmse_differential_3m <- ts(ld_3m, start=c(2013,1,1), end=c(2022,12,1), freq=12)
+#Plot them to examine stationarity:
+plot.ts(rmse_differential_3m, main="Loss differential RF(tune) vs ANN - 3m",cex.axis=1.8)
+
+#DM regressions
+dm3m=lm(ld_3m~1) #regression
+acf(dm3m$residuals) #check serial correlation of residuals - number of significant autocorrelations is a good guess for number lags included in the HAC variance estimator
+dm3m$coefficients/sqrt(NeweyWest(dm3m,lag=8)) #form the DM t-statistic
+# DM t-statistic = 0.01987463
+```
+
+```{r}
+########### 6m: RF(default) vs Boosting ###########
+# squared loss for different methods
+setwd("/Users/judy/Desktop/EC4308/ec4308_usdjpy_prediction/src")
+rf_6m <- read.csv("../data/rf_err_6m.csv")
+rf_6m_rmse <- rf_6m$error^2
+boost_6m <- read.csv("../data/boost_err_6m.csv")
+boost_6m_rmse <- boost_6m$error^2
+
+# loss differentials for different horizons
+ld_6m <- rf_6m_rmse - boost_6m_rmse
+
+#Create ts object containing loss differentials
+rmse_differential_6m <- ts(ld_6m, start=c(2013,1,1), end=c(2022,12,1), freq=12)
+#Plot them to examine stationarity:
+plot.ts(rmse_differential_6m, main="Loss differential RF(default) vs Boosting - 6m",cex.axis=1.8)
+
+#DM regressions
+dm6m=lm(ld_6m~1) #regression
+acf(dm6m$residuals) #check serial correlation of residuals - number of significant autocorrelations is a good guess for number lags included in the HAC variance estimator
+dm6m$coefficients/sqrt(NeweyWest(dm6m,lag=6)) #form the DM t-statistic
+# DM t-statistic = -1.763961
+```
+
+```{r}
+########### 12m: RF(default) vs Boosting ###########
+# squared loss for different methods
+setwd("/Users/judy/Desktop/EC4308/ec4308_usdjpy_prediction/src")
+rf_12m <- read.csv("../data/rf_err_12m.csv")
+rf_12m_rmse <- rf_12m$error^2
+boost_12m <- read.csv("../data/boost_err_12m.csv")
+boost_12m_rmse <- boost_12m$error^2
+
+# loss differentials for different horizons
+ld_12m <- rf_12m_rmse - boost_12m_rmse
+
+#Create ts object containing loss differentials
+rmse_differential_12m <- ts(ld_12m, start=c(2013,1,1), end=c(2022,12,1), freq=12)
+#Plot them to examine stationarity:
+plot.ts(rmse_differential_12m, main="Loss differential RF(default) vs Boosting - 12m",cex.axis=1.8)
+
+#DM regressions
+dm12m=lm(ld_12m~1) #regression
+acf(dm12m$residuals) #check serial correlation of residuals - number of significant autocorrelations is a good guess for number lags included in the HAC variance estimator
+dm12m$coefficients/sqrt(NeweyWest(dm12m,lag=2)) #form the DM t-statistic
+# DM t-statistic = -3.313246
+```
