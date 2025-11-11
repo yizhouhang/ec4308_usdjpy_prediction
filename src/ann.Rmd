@@ -249,14 +249,126 @@ best3 <- tune3 %>%
 
 best3
 
+res_best3 <- run_rolling_ann_h(
+  df          = df_3m,
+  h           = 3,
+  cutoff      = as.Date("2012-12-01"),
+  ann_hid     = best3$size,
+  ann_decay   = best3$decay,
+  ann_maxit   = best3$maxit
+)
+
+oos_best3 <- attr(res_best3, "oos")
+target   <- "Y_log_return_3m"
+errors_best3 <- oos_best3[[target]] - oos_best3$yhat_ann
+err_tbl3 <- oos_best3 %>%
+  transmute(date,
+            y    = !!sym(target),
+            yhat = yhat_ann,
+            error = y - yhat)
+
+#err_tbl3
+write.csv(err_tbl3, "../data/ann_err_tbl3.csv", row.names = FALSE)
+
+```
+
+```{r}
 tune1 <- eval_grid(df_1m, h = 1, cutoff = as.Date("2012-12-01"))
 
-# Rank by RMSE (primary) then DA (secondary)
 best1 <- tune1 %>%
   dplyr::arrange(RMSE_ANN, dplyr::desc(DA_ANN)) %>%
   dplyr::slice(1)
 
 best1
 
+res_best1 <- run_rolling_ann_h(
+  df          = df_1m,
+  h           = 1,
+  cutoff      = as.Date("2012-12-01"),
+  ann_hid     = best1$size,
+  ann_decay   = best1$decay,
+  ann_maxit   = best1$maxit
+)
+
+oos_best1 <- attr(res_best1, "oos")
+target   <- "Y_log_return_1m"
+errors_best1 <- oos_best1[[target]] - oos_best1$yhat_ann
+err_tbl1 <- oos_best1 %>%
+  transmute(date,
+            y    = !!sym(target),
+            yhat = yhat_ann,
+            error = y - yhat)
+
+#err_tbl1
+write.csv(err_tbl1, "../data/ann_err_tbl1.csv", row.names = FALSE)
 ```
 
+```{r}
+# Example: tune for 3-month horizon
+tune6 <- eval_grid(df_6m, h = 6, cutoff = as.Date("2012-12-01"))
+
+# Rank by RMSE (primary) then DA (secondary)
+best6 <- tune6 %>%
+  dplyr::arrange(RMSE_ANN, dplyr::desc(DA_ANN)) %>%
+  dplyr::slice(1)
+
+best6
+
+res_best6 <- run_rolling_ann_h(
+  df          = df_6m,
+  h           = 6,
+  cutoff      = as.Date("2012-12-01"),
+  ann_hid     = best6$size,
+  ann_decay   = best6$decay,
+  ann_maxit   = best6$maxit
+)
+
+oos_best6 <- attr(res_best6, "oos")
+target   <- "Y_log_return_6m"
+errors_best6 <- oos_best6[[target]] - oos_best6$yhat_ann
+err_tbl6 <- oos_best6 %>%
+  transmute(date,
+            y    = !!sym(target),
+            yhat = yhat_ann,
+            error = y - yhat)
+
+#err_tbl3
+write.csv(err_tbl6, "../data/ann_err_tbl6.csv", row.names = FALSE)
+```
+
+```{r}
+# Example: tune for 3-month horizon
+tune12 <- eval_grid(df_12m, h = 12, cutoff = as.Date("2012-12-01"))
+
+# Rank by RMSE (primary) then DA (secondary)
+best12 <- tune12 %>%
+  dplyr::arrange(RMSE_ANN, dplyr::desc(DA_ANN)) %>%
+  dplyr::slice(1)
+
+best12
+
+res_best12 <- run_rolling_ann_h(
+  df          = df_12m,
+  h           = 12,
+  cutoff      = as.Date("2012-12-01"),
+  ann_hid     = best12$size,
+  ann_decay   = best12$decay,
+  ann_maxit   = best12$maxit
+)
+
+oos_best12 <- attr(res_best12, "oos")
+target   <- "Y_log_return_12m"
+errors_best12 <- oos_best12[[target]] - oos_best12$yhat_ann
+err_tbl12 <- oos_best12 %>%
+  transmute(date,
+            y    = !!sym(target),
+            yhat = yhat_ann,
+            error = y - yhat)
+
+#err_tbl3
+write.csv(err_tbl12, "../data/ann_err_tbl12.csv", row.names = FALSE)
+
+
+
+
+```

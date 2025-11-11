@@ -1,0 +1,169 @@
+---
+title: "ensemblbe"
+author: "Erica"
+date: "2025-11-11"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+suppressPackageStartupMessages({
+  library(dplyr)
+  library(nnet)
+})
+```
+
+
+```{r}
+# ---- standardization helper function because ANN is scale sensitive ----
+standardize_train_test <- function(X_tr, X_te){ 
+  mu <- apply(X_tr, 2, mean); # mean of train
+  sdv <- apply(X_tr, 2, sd) # sd of train
+  sdv[!is.finite(sdv) | sdv == 0] <- 1
+  list(
+    X_tr_s = as.matrix(scale(X_tr, center = mu, scale = sdv)),
+    X_te_s = as.matrix(scale(X_te, center = mu, scale = sdv)) # use train's stats because we don't know the future yet
+  )
+}
+
+# ---- rmse definition ----
+rmse <- \(e) sqrt(mean(e^2))
+
+# ---- directional accuracy definition = sign of y compared with sign of yhat
+da   <- function(y, yhat, drop_zero = TRUE){
+  sy <- sign(y)
+  sf <- sign(yhat)
+  ok <- is.finite(sy) & is.finite(sf)
+  if (drop_zero) ok <- ok & sy != 0 & sf != 0
+  mean(sy[ok] == sf[ok])
+}
+
+# ---- horizon-aware, volatility-gated ANN vs AR(1) ----
+run_vol_gated_ann_ar1 <- function(df, 
+                                  h = 1,
+                                  target_col = NULL,
+                                  lag1_col   = NULL,
+                                  predictors = NULL,
+                                  cutoff = as.Date("2012-12-01"),
+                                  vol_window = 12, 
+                                  vol_quantile = 0.70,
+                                  ann_hid = 4, 
+                                  ann_decay = 1e-3, 
+                                  ann_maxit = 500) {
+  stopifnot(inherits(df$date, "Date"))
+  df <- df[order(df$date), ]
+
+  # infer columns by horizon
+  if (is.null(target_col)) target_col <- paste0("Y_log_return_", h, "m")
+  if (!(target_col %in% names(df))) stop("Target column '", target_col, "' not found.")
+  if (is.null(lag1_col)) {
+    cand <- paste0("monthly_return_lag", h)
+    lag1_col <- if (cand %in% names(df)) cand else if ("monthly_return_lag1" %in% names(df)) "monthly_return_lag1" else NA_character_
+  }
+
+  # predictors: all except date & target, ANN uses numeric-only subset
+  if (is.null(predictors)) predictors <- setdiff(names(df), c("date", target_col))
+  num_X <- predictors[sapply(df[, predictors, drop = FALSE], is.numeric)]
+  if (!length(num_X)) stop("No numeric predictors for ANN.")
+
+  # window size W per your setup
+  if (!is.na(lag1_col)) {
+    W <- df %>% filter(date <= cutoff, !is.na(.data[[target_col]]), !is.na(.data[[lag1_col]])) %>% nrow()
+  } else {
+    W <- df %>% filter(date <= cutoff, !is.na(.data[[target_col]])) %>% nrow()
+  }
+  idx_cut <- which(df$date == cutoff)
+  i_start <- idx_cut + h
+  n <- nrow(df)
+
+  # precompute causal vol proxy: rolling mean |y| over vol_window
+  y_all <- df[[target_col]]
+  rv <- rep(NA_real_, n)
+  for (i in seq_len(n)) {
+    j1 <- max(1, i - vol_window); j2 <- i - 1
+    if (j2 >= j1) rv[i] <- mean(abs(y_all[j1:j2]), na.rm = TRUE)
+  }
+
+  yhat_ar1 <- rep(NA_real_, n)
+  yhat_ann <- rep(NA_real_, n)
+  yhat_ens <- rep(NA_real_, n)
+
+  for (i in seq_len(n)) {
+    tr_end   <- i - h
+    tr_start <- tr_end - W + 1
+    if (tr_start < 1) next
+
+    # ----- AR(1) baseline -----
+    if (!is.na(lag1_col)) {
+      fit_ar1 <- try(lm(reformulate(lag1_col, response = target_col),
+                        data = df[tr_start:tr_end, ]), silent = TRUE)
+      if (!inherits(fit_ar1, "try-error"))
+        yhat_ar1[i] <- predict(fit_ar1, newdata = df[i, , drop = FALSE])
+    }
+
+    # ----- ANN -----
+    df_tr <- df[tr_start:tr_end, c(target_col, num_X), drop = FALSE]
+    df_te <- df[i, c(target_col, num_X), drop = FALSE]
+    good_tr <- complete.cases(df_tr)
+    if (!any(good_tr) || !all(complete.cases(df_te))) next
+    df_tr <- df_tr[good_tr, , drop = FALSE]
+
+    y_tr <- df_tr[[target_col]]
+    X_tr <- as.matrix(df_tr[, num_X, drop = FALSE])
+    X_te <- as.matrix(df_te[, num_X, drop = FALSE])
+    std  <- standardize_train_test(X_tr, X_te)
+    ann_fit <- nnet(x = std$X_tr_s, y = y_tr,
+                    size = ann_hid, decay = ann_decay,
+                    linout = TRUE, maxit = ann_maxit, trace = FALSE)
+    yhat_ann[i] <- as.numeric(predict(ann_fit, std$X_te_s))
+
+    # ----- Volatility-gated switch (causal) -----
+    # threshold = quantile of *past* rv within the training window
+    rv_hist <- rv[tr_start:tr_end]
+    thr <- stats::quantile(rv_hist[is.finite(rv_hist)], probs = vol_quantile, na.rm = TRUE, names = FALSE)
+    vol_now <- rv[tr_end + 1]  # the most recent vol available at decision time i (uses data up to t=i-1)
+    use_ann <- is.finite(vol_now) && is.finite(thr) && vol_now > thr
+
+    base_pred <- if (is.finite(yhat_ar1[i])) yhat_ar1[i] else 0  # fallback = RW0 if AR1 missing
+    yhat_ens[i] <- if (use_ann && is.finite(yhat_ann[i])) yhat_ann[i] else base_pred
+  }
+
+  # ----- OOS evaluation -----
+  oos <- df %>%
+    mutate(yhat_ar1 = yhat_ar1,
+           yhat_ann = yhat_ann,
+           yhat_ens = yhat_ens) %>%
+    filter(!is.na(yhat_ens))  # ensemble-defined rows
+
+  y     <- oos[[target_col]]
+  e_ar1 <- y - oos$yhat_ar1
+  e_ann <- y - oos$yhat_ann
+  e_ens <- y - oos$yhat_ens
+
+  tibble::tibble(
+    horizon              = paste0(h, "m"),
+    window_W             = W,
+    first_decision_date  = df$date[i_start],
+    n_oos                = nrow(oos),
+    RMSE_AR1             = rmse(e_ar1),
+    RMSE_ANN             = rmse(e_ann),
+    RMSE_ENSEMBLE        = rmse(e_ens),
+    R2_OOS_ENSEMBLE_vs_AR1 = 1 - sum(e_ens^2, na.rm=TRUE) / sum(e_ar1^2, na.rm=TRUE),
+    DA_AR1               = da(y, oos$yhat_ar1, TRUE),
+    DA_ANN               = da(y, oos$yhat_ann, TRUE),
+    DA_ENSEMBLE          = da(y, oos$yhat_ens, TRUE)
+  ) -> summary_tbl
+
+  attr(summary_tbl, "oos") <- oos  # keep predictions if you want to export
+  summary_tbl
+}
+
+```
+
+
+```{r}
+```
+

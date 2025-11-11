@@ -109,6 +109,12 @@ summary_tbl <- tibble::tibble(
 )
 
 print(summary_tbl)
+
+oostbl = oos %>% select (date, Y_log_return_1m, yhat_ar1) %>%
+  mutate (error = Y_log_return_1m - yhat_ar1)
+
+write.csv(oostbl, "../data/ar1_err_tbl1.csv", row.names = FALSE)
+
 ```
 
 ## Forecast Horizon = 3m
