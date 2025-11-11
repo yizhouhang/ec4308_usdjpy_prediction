@@ -21,11 +21,11 @@ setwd("/Users/judy/Desktop/EC4308/ec4308_usdjpy_prediction/src")
 
 # read datasets (different horizons)
 pred1m = read.csv("../data/df_1m_lag.csv")
-pred3m = read.csv("../data/df_3m_lag.csv")
+pred1m = read.csv("../data/df_1m_lag.csv")
 pred6m = read.csv("../data/df_6m_lag.csv")
 pred12m = read.csv("../data/df_12m_lag.csv")
 
-for (d in c("pred1m", "pred3m", "pred6m", "pred12m")) {
+for (d in c("pred1m", "pred1m", "pred6m", "pred12m")) {
   df <- get(d)                  # retrieve the dataset by name
   df[[1]] <- as.Date(df[[1]])   # convert first column to Date
   df <- df[order(df$date), ]    # sort ascending
@@ -66,6 +66,7 @@ rf_train_test <- function(data, y_col = 4) {
   # directional accuracy: record 1 if both > 0, record 0 if both < 0
   da <- ifelse((y_pred > 0 & y_test > 0) | (y_pred < 0 & y_test < 0), 1, 0)
   mean_da <- mean(da)
+  rf_importance <- importance(rf_model)
 
   # results
   results <- list(
@@ -74,7 +75,8 @@ rf_train_test <- function(data, y_col = 4) {
     actuals = y_test,
     rmse = rmse,
     mae = mae,
-    directional_accuracy = mean_da
+    directional_accuracy = mean_da,
+    importance = rf_importance
   )
   return(results)
 }
@@ -86,7 +88,7 @@ rf_train_test <- function(data, y_col = 4) {
 rf_1m_traintest <- rf_train_test(data=pred1m)
 # rmse = 0.02234437
 # da = 0.5333333
-rf_3m_traintest <- rf_train_test(data=pred3m)
+rf_1m_traintest <- rf_train_test(data=pred1m)
 # rmse = 0.04976673
 # da = 0.4416667
 rf_6m_traintest <- rf_train_test(data=pred6m)
@@ -101,7 +103,7 @@ rf_12m_traintest <- rf_train_test(data=pred12m)
 ```{r}
 results_list <- list()
 
-for (d in c("pred1m", "pred3m", "pred6m", "pred12m")) {
+for (d in c("pred1m", "pred1m", "pred6m", "pred12m")) {
   df <- get(d)
   res <- rf_train_test(df)
   results_list[[d]] <- res
@@ -117,12 +119,12 @@ save(results_list, file = "/Users/judy/Desktop/EC4308/ec4308_usdjpy_result/rf_tr
 ```{r}
 setwd("/Users/judy/Desktop/EC4308/ec4308_usdjpy_result")
 rf_train_test_results <- get(load("rf_train_test_results_all.RData"))
-rf_1m_model <- rf_train_test_results$pred1m$model
+rf_12m_model <- rf_train_test_results$pred12m$model
+rf_12m_importance <- rf_train_test_results$pred12m$importance
 
 ## !!!!!!
-var_used <- table(rf_1m_model$forest$bestvar)
-names(var_used) <- all.vars(rf_1m_model$terms)[-1]
-sort(var_used, decreasing = TRUE)[1:10]
+varImpPlot(rf_12m_model)
+head(rf_12m_importance[order(rf_12m_importance[, 1], decreasing = TRUE), ], 10)
 ```
 
 ## 2) Bagging train/test
@@ -159,6 +161,7 @@ bag_train_test <- function(data, y_col = 4) {
   # directional accuracy: record 1 if both > 0, record 0 if both < 0
   da <- ifelse((y_pred > 0 & y_test > 0) | (y_pred < 0 & y_test < 0), 1, 0)
   mean_da <- mean(da)
+  rf_importance <- importance(rf_model)
 
   # results
   results <- list(
@@ -167,7 +170,8 @@ bag_train_test <- function(data, y_col = 4) {
     actuals = y_test,
     rmse = rmse,
     mae = mae,
-    directional_accuracy = mean_da
+    directional_accuracy = mean_da,
+    importance = rf_importance
   )
   return(results)
 }
@@ -178,7 +182,7 @@ bag_train_test <- function(data, y_col = 4) {
 bag_1m_traintest <- bag_train_test(data=pred1m)
 # rmse = 
 # da = 
-bag_3m_traintest <- bag_train_test(data=pred3m)
+bag_1m_traintest <- bag_train_test(data=pred1m)
 # rmse = 
 # da = 
 bag_6m_traintest <- bag_train_test(data=pred6m)
@@ -193,7 +197,7 @@ bag_12m_traintest <- bag_train_test(data=pred12m)
 ```{r}
 results_list_bag_traintest <- list()
 
-for (d in c("pred1m", "pred3m", "pred6m", "pred12m")) {
+for (d in c("pred1m", "pred1m", "pred6m", "pred12m")) {
   df <- get(d)
   res <- bag_train_test(df)
   results_list_bag_traintest[[d]] <- res
@@ -204,6 +208,106 @@ save(results_list_bag_traintest, file = "/Users/judy/Desktop/EC4308/ec4308_usdjp
 # load("bag_train_test_results_all.RData")
 # names(results_list_bag_traintest)
 ```
+
+### Variable importance
+```{r}
+setwd("/Users/judy/Desktop/EC4308/ec4308_usdjpy_result")
+bag_train_test_results <- get(load("bag_train_test_results_all.RData"))
+bag_1m_model <- bag_train_test_results$pred1m$model
+bag_1m_importance <- bag_train_test_results$pred1m$importance
+
+
+varImpPlot(bag_1m_model)
+head(bag_1m_importance[order(bag_1m_importance[, 1], decreasing = TRUE), ], 10)
+```
+## 3) Boosting
+```{r}
+boost_train_test <- function(data, y_col = 4) {
+  cutoff_date <- "2012-12-31"
+  
+  data <- data[order(data[[1]]), ]
+  train <- subset(data, data[[1]] <= as.Date(cutoff_date))
+  test  <- subset(data, data[[1]] >  as.Date(cutoff_date))
+  
+  X_train <- train[, -c(1, 2, 3, y_col), drop = FALSE]
+  y_train <- train[[y_col]]
+  X_test  <- test[, -c(1, 2, 3, y_col), drop = FALSE]
+  y_test  <- test[[y_col]]
+
+
+  set.seed(123)
+  boost_model <- gbm(
+    formula = y_train ~ .,
+    data = X_train,
+    distribution = "gaussian",    # regression
+    n.trees = 5000,               # total boosting iterations
+    interaction.depth = 3,        # tree depth (complexity)
+    shrinkage = 0.01,             # learning rate
+  )
+  
+  
+  best_iter <- gbm.perf(boost_model, method = "OOB", plot.it = FALSE)
+  cat("Best number of trees selected by OOB:", best_iter, "\n")
+
+
+  y_pred <- predict(boost_model, newdata = X_test, n.trees = best_iter)
+
+
+  rmse <- sqrt(mean((y_pred - y_test)^2))
+  mae  <- mean(abs(y_pred - y_test))
+  da <- mean(sign(y_pred) == sign(y_test))
+  importance_df <- summary(boost_model, n.trees = best_iter, plotit = FALSE)
+
+  
+  results <- list(
+    model = boost_model,
+    best_iter = best_iter,
+    predictions = y_pred,
+    actuals = y_test,
+    rmse = rmse,
+    mae = mae,
+    directional_accuracy = da,
+    importance = importance_df
+  )
+  return(results)
+}
+
+```
+
+
+### Save bag train/test results
+```{r}
+results_list_boost_traintest <- list()
+
+for (d in c("pred1m", "pred3m", "pred6m", "pred12m")) {
+  df <- get(d)
+  res <- boost_train_test(df)
+  results_list_boost_traintest[[d]] <- res
+}
+
+save(results_list_boost_traintest, file = "/Users/judy/Desktop/EC4308/ec4308_usdjpy_result/boost_train_test_results_all.RData")
+
+# load("boost_train_test_results_all.RData")
+# names(results_list_boost_traintest)
+```
+
+### Variable importance
+```{r}
+setwd("/Users/judy/Desktop/EC4308/ec4308_usdjpy_result")
+boost_train_test_results <- get(load("boost_train_test_results_all.RData"))
+
+boost_1m_importance <- boost_train_test_results$pred1m$importance
+boost_3m_importance <- boost_train_test_results$pred3m$importance
+boost_6m_importance <- boost_train_test_results$pred6m$importance
+boost_12m_importance <- boost_train_test_results$pred12m$importance
+
+head(boost_1m_importance[order(boost_1m_importance$rel.inf, decreasing = TRUE), ], 10)
+head(boost_3m_importance[order(boost_3m_importance$rel.inf, decreasing = TRUE), ], 10)
+head(boost_6m_importance[order(boost_6m_importance$rel.inf, decreasing = TRUE), ], 10)
+head(boost_12m_importance[order(boost_m_importance$rel.inf, decreasing = TRUE), ], 10)
+
+```
+
 
 # Rolling window
 ## 1) Random forest rolling window
@@ -300,8 +404,7 @@ aggregate_importance <- function(importance_list) {
   
   return(imp_summary)
   
-  # %IncMSE: Percent Increase in Mean Squared Error
-  # IncNodePurity: Increase in Node Purity
+
 }
 
 ```
@@ -310,8 +413,8 @@ aggregate_importance <- function(importance_list) {
 # rolling-window forecasts at different horizons
 rf_1m_roll <- rolling_rf_rmse(data=pred1m)
 rf_1m_roll_importance <- aggregate_importance(rf_1m_roll$importance_history)
-rf_3m_roll <- rolling_rf_rmse(data=pred3m)
-rf_3m_roll_importance <- aggregate_importance(rf_3m_roll$importance_history)
+rf_1m_roll <- rolling_rf_rmse(data=pred1m)
+rf_1m_roll_importance <- aggregate_importance(rf_1m_roll$importance_history)
 rf_6m_roll <- rolling_rf_rmse(data=pred6m)
 rf_6m_roll_importance <- aggregate_importance(rf_6m_roll$importance_history)
 rf_12m_roll <- rolling_rf_rmse(data=pred12m)
@@ -322,7 +425,7 @@ rf_12m_roll_importance <- aggregate_importance(rf_12m_roll$importance_history)
 ```{r}
 # results_list <- list()
 #"pred1m", "pred6m", "pred12m"
-for (d in c("pred3m")) {
+for (d in c("pred1m")) {
   df <- get(d)
   res <- rolling_rf_rmse(data=df, data_name=d)
   results_list[[d]] <- res
@@ -409,8 +512,8 @@ rolling_bag_rmse <- function(data, data_name, nprev = 120, y_col = 4) {
 ```{r}
 bag_1m_roll <- rolling_bag_rmse(data=pred1m)
 bag_1m_roll_importance <- aggregate_importance(bag_1m_roll$importance_history)
-bag_3m_roll <- rolling_bag_rmse(data=pred3m)
-bag_3m_roll_importance <- aggregate_importance(bag_3m_roll$importance_history)
+bag_1m_roll <- rolling_bag_rmse(data=pred1m)
+bag_1m_roll_importance <- aggregate_importance(bag_1m_roll$importance_history)
 bag_6m_roll <- rolling_bag_rmse(data=pred6m)
 bag_6m_roll_importance <- aggregate_importance(bag_6m_roll$importance_history)
 bag_12m_roll <- rolling_bag_rmse(data=pred12m)
@@ -421,7 +524,7 @@ bag_12m_roll_importance <- aggregate_importance(bag_12m_roll$importance_history)
 ```{r}
 results_list_bag_roll <- list()
 
-for (d in c("pred1m", "pred3m", "pred6m", "pred12m")) {
+for (d in c("pred1m", "pred1m", "pred6m", "pred12m")) {
   df <- get(d)
   res <- rolling_bag_rmse(data=df, data_name=d)
   results_list_bag_roll[[d]] <- res
@@ -433,9 +536,107 @@ save(results_list_bag_roll, file = "/Users/judy/Desktop/EC4308/ec4308_usdjpy_res
 
 ```
 
+## 3) Boosting rolling window
 ```{r}
+rolling_boost_rmse <- function(data, data_name, nprev = 120, y_col = 4) {
+  
+  y_all <- data[[y_col]]
+  X_all <- data[, -c(1, 2, 3, y_col), drop = FALSE]
+  
+  n <- nrow(data)
+  stopifnot(n > nprev)
+  
+  preds <- rep(NA_real_, nprev)
+  actual <- y_all[(n - nprev + 1):n]
+  importance_list <- vector("list", nprev)
+  
+  cat("Rolling forecasts for", data_name, "started... total =", nprev, "steps\n")
+  
+  for (i in nprev:1) {
+    start_idx <- 1 + nprev - i
+    end_idx   <- n - i
+    
+    X_train <- X_all[start_idx:end_idx, , drop = FALSE]
+    y_train <- y_all[start_idx:end_idx]
+    X_pred  <- X_all[end_idx + 1, , drop = FALSE]
+    
+    boost_model <- gbm(
+      formula = y_train ~ .,
+      data = X_train,
+      distribution = "gaussian",   # regression
+      n.trees = 300, 
+      interaction.depth = 3,       # tree depth
+      shrinkage = 0.01,            # learning rate
+
+    )
+    
+
+    best_iter <- gbm.perf(boost_model, method = "OOB", plot.it = FALSE)
+    
+
+    preds[(1 + nprev - i)] <- predict(boost_model, newdata = X_pred, n.trees = best_iter)
+    
+
+    importance_list[[i]] <- summary(boost_model, n.trees = best_iter, plotit = FALSE)
+    
+    if (i %% 10 == 0 || i == 1) {
+      cat("Iteration", (1 + nprev - i), "of", nprev, "done\n")
+    }
+  }
+  
+
+  rmse <- sqrt(mean((actual - preds)^2))
+  mae  <- mean(abs(actual - preds))
+  da <- ifelse((preds > 0 & actual > 0) | (preds < 0 & actual < 0), 1, 0)
+  mean_da <- mean(da)
+  cat("Rolling RMSE:", round(rmse, 6),
+      "| MAE:", round(mae, 6),
+      "| DA:", round(mean_da, 4), "\n")
+  
+
+  results <- data.frame(
+    Date = data[(n - nprev + 1):n, 1],
+    Actual = actual,
+    Forecast = preds
+  )
+  
+
+  plot(results$Date, results$Actual, type = "l",
+       main = paste("Rolling Boosting Forecast vs Actual —", data_name),
+       ylab = "Y", xlab = "Date")
+  lines(results$Date, results$Forecast, col = "red")
+  legend("topleft", legend = c("Actual", "Forecast"),
+         col = c("black", "red"), lty = 1)
+  
+
+  return(list(
+    results = results,
+    importance_history = importance_list,
+    rmse = rmse,
+    mae = mae,
+    da = mean_da
+  ))
+}
 
 ```
+
+
+### Save boost rolling results
+```{r}
+results_list_boost_roll <- list()
+
+for (d in c("pred1m", "pred1m", "pred6m", "pred12m")) { 
+  df <- get(d) 
+  res <- rolling_boost_rmse(data=df, data_name=d) 
+  results_list_boost_roll[[d]] <- res 
+  }
+
+save(results_list_boost_roll, file = "/Users/judy/Desktop/EC4308/ec4308_usdjpy_result/boost_rolling_results_all.RData")
+
+# load("../model/boost_rolling_results_all.RData")
+
+```
+
 
 # All tree-based models
 ```{r}
