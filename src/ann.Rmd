@@ -1,0 +1,262 @@
+---
+title: "ANN"
+author: "Erica"
+date: "2025-11-11"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+suppressPackageStartupMessages({
+  library(dplyr)
+  library(nnet)
+})
+
+set.seed(42)
+
+# ---- helpers ----
+standardize_train_test <- function(X_tr, X_te) {
+  mu  <- apply(X_tr, 2, mean)
+  sdv <- apply(X_tr, 2, sd)
+  sdv[!is.finite(sdv) | sdv == 0] <- 1
+  X_tr_s <- scale(X_tr, center = mu, scale = sdv)
+  X_te_s <- scale(X_te, center = mu, scale = sdv)
+  list(X_tr_s = as.matrix(X_tr_s), X_te_s = as.matrix(X_te_s))
+}
+rmse <- function(e) sqrt(mean(e^2))
+da   <- function(y, yhat, drop_zero = TRUE) {
+  sy <- sign(y); sf <- sign(yhat)
+  ok <- is.finite(sy) & is.finite(sf)
+  if (drop_zero) ok <- ok & sy != 0 & sf != 0
+  mean(sy[ok] == sf[ok])
+}
+
+# =============================================================================
+# Horizon-aware rolling ANN (walk-forward)
+# df           : time-ordered data.frame with 'date' (Date), targets, predictors
+# h            : horizon in {1,3,6,12}
+# target_col   : OPTIONAL; by default uses paste0("Y_log_return_", h, "m")
+# lag1_col     : OPTIONAL; used only for AR(1) baseline. If NULL:
+#                  - tries paste0("monthly_return_lag", h)
+#                  - else falls back to "monthly_return_lag1" if present
+# predictors   : OPTIONAL character vector; by default uses ALL columns except date & target
+# cutoff       : initial window endpoint (same meaning as your setup)
+# ann_hid/decay/maxit : nnet hyperparams
+# use_rw_drift : if TRUE, RW baseline uses rolling mean; else zero (RW0)
+# returns      : summary tibble + invisibly attaches oos preds if you want to keep them
+# =============================================================================
+run_rolling_ann_h <- function(df, h = 3,
+                              target_col = NULL,
+                              lag1_col = NULL,
+                              predictors = NULL,
+                              cutoff = as.Date("2012-12-01"),
+                              ann_hid = 4, ann_decay = 1e-3, ann_maxit = 500,
+                              use_rw_drift = FALSE) {
+  stopifnot(inherits(df$date, "Date"))
+  df <- df[order(df$date), ]
+
+  # --- infer columns based on horizon ---
+  if (is.null(target_col)) {
+    target_col <- paste0("Y_log_return_", h, "m")
+  }
+  if (!(target_col %in% names(df))) {
+    stop("Target column '", target_col, "' not found in df.")
+  }
+  if (is.null(lag1_col)) {
+    cand <- paste0("monthly_return_lag", h)
+    lag1_col <- if (cand %in% names(df)) cand else if ("monthly_return_lag1" %in% names(df)) "monthly_return_lag1" else NA_character_
+  }
+  if (!is.na(lag1_col) && !(lag1_col %in% names(df))) {
+    stop("lag1_col '", lag1_col, "' not found in df.")
+  }
+
+  # predictor set
+  if (is.null(predictors)) {
+    predictors <- setdiff(names(df), c("date", target_col))
+  } else {
+    missing <- setdiff(predictors, names(df))
+    if (length(missing)) stop("Predictors not in df: ", paste(missing, collapse = ", "))
+  }
+  num_X <- predictors[sapply(df[, predictors, drop = FALSE], is.numeric)]
+  if (!length(num_X)) stop("No numeric predictors available for ANN.")
+
+  # --- window size W as in your convention ---
+  if (!is.na(lag1_col)) {
+    W <- df %>%
+      filter(date <= cutoff, !is.na(.data[[target_col]]), !is.na(.data[[lag1_col]])) %>%
+      nrow()
+  } else {
+    W <- df %>% filter(date <= cutoff, !is.na(.data[[target_col]])) %>% nrow()
+  }
+  idx_cut <- which(df$date == cutoff)
+  i_start <- idx_cut + h
+
+  n <- nrow(df)
+  yhat_ar1 <- rep(NA_real_, n)
+  yhat_rw0 <- rep(0, n)
+  yhat_ann <- rep(NA_real_, n)
+
+  for (i in seq_len(n)) {
+    tr_end   <- i - h
+    tr_start <- tr_end - W + 1
+    if (tr_start < 1) next
+
+    # ---- AR(1) baseline (only if lag1_col is known) ----
+    if (!is.na(lag1_col)) {
+      fit_ar1 <- try(lm(reformulate(lag1_col, response = target_col),
+                        data = df[tr_start:tr_end, ]), silent = TRUE)
+      if (!inherits(fit_ar1, "try-error")) {
+        yhat_ar1[i] <- predict(fit_ar1, newdata = df[i, , drop = FALSE])
+      }
+    }
+
+    # ---- RW baseline ----
+    if (isTRUE(use_rw_drift)) {
+      mu_h <- mean(df[tr_start:tr_end, target_col, drop = TRUE], na.rm = TRUE)
+      yhat_rw0[i] <- mu_h
+    } else {
+      yhat_rw0[i] <- 0
+    }
+
+    # ---- build train/test for ANN ----
+    df_tr <- df[tr_start:tr_end, c(target_col, num_X), drop = FALSE]
+    df_te <- df[i, c(target_col, num_X), drop = FALSE]
+
+    good_tr <- complete.cases(df_tr)
+    if (!any(good_tr)) next
+    df_tr <- df_tr[good_tr, , drop = FALSE]
+    if (!all(complete.cases(df_te))) next
+
+    y_tr <- df_tr[[target_col]]
+    X_tr <- as.matrix(df_tr[, num_X, drop = FALSE])
+    X_te <- as.matrix(df_te[, num_X, drop = FALSE])
+
+    std    <- standardize_train_test(X_tr, X_te)
+    X_tr_s <- std$X_tr_s; X_te_s <- std$X_te_s
+
+    ann_fit <- nnet(x = X_tr_s, y = y_tr,
+                    size = ann_hid, decay = ann_decay,
+                    linout = TRUE, maxit = ann_maxit, trace = FALSE)
+
+    yhat_ann[i] <- as.numeric(predict(ann_fit, X_te_s))
+  }
+
+  # ---- OOS evaluation ----
+  oos <- df %>%
+    mutate(yhat_ar1 = yhat_ar1,
+           yhat_rw0 = yhat_rw0,
+           yhat_ann = yhat_ann) %>%
+    filter(!is.na(yhat_ann))
+
+  y     <- oos[[target_col]]
+  e_rw0 <- y - oos$yhat_rw0
+  e_ann <- y - oos$yhat_ann
+  e_ar1 <- if (!all(is.na(oos$yhat_ar1))) y - oos$yhat_ar1 else NA_real_
+
+  out <- tibble::tibble(
+    horizon              = paste0(h, "m"),
+    window_W             = W,
+    first_decision_date  = df$date[i_start],
+    n_oos                = nrow(oos),
+    RMSE_RW0             = rmse(e_rw0),
+    RMSE_ANN             = rmse(e_ann),
+    R2_OOS_ANN_vs_RW0    = 1 - sum(e_ann^2) / sum(e_rw0^2),
+    DA_RW0               = da(y, oos$yhat_rw0, TRUE),
+    DA_ANN               = da(y, oos$yhat_ann, TRUE)
+  )
+  if (!all(is.na(oos$yhat_ar1))) {
+    out$RMSE_AR1 <- rmse(e_ar1)
+    out$DA_AR1   <- da(y, oos$yhat_ar1, TRUE)
+  }
+
+  attr(out, "oos") <- oos  # keep predictions if you want to ensemble later
+  out
+}
+
+```
+
+```{r}
+# h = 1, 3, 6, 12 (expects columns Y_log_return_1m/3m/6m/12m)
+df_1m <- read_csv("../data/df_1m_lag.csv", show_col_types = FALSE) %>%
+  select(date, Y_log_return_1m, monthly_return_lag1) %>%
+  arrange(date) %>%
+  filter(!is.na(Y_log_return_1m), !is.na(monthly_return_lag1))
+
+df_3m <- read_csv("../data/df_3m_lag.csv", show_col_types = FALSE) %>%
+  select(date, Y_log_return_3m, monthly_return_lag1) %>%
+  arrange(date) %>%
+  filter(!is.na(Y_log_return_3m), !is.na(monthly_return_lag1))
+
+df_6m <- read_csv("../data/df_6m_lag.csv", show_col_types = FALSE) %>%
+  select(date, Y_log_return_6m, monthly_return_lag1) %>%
+  arrange(date) %>%
+  filter(!is.na(Y_log_return_6m), !is.na(monthly_return_lag1))
+
+df_12m <- read_csv("../data/df_12m_lag.csv", show_col_types = FALSE) %>%
+  select(date, Y_log_return_12m, monthly_return_lag1) %>%
+  arrange(date) %>%
+  filter(!is.na(Y_log_return_12m), !is.na(monthly_return_lag1))
+
+res1 <- run_rolling_ann_h(df_1m, h = 1, cutoff = as.Date("2012-12-01"),
+                          ann_hid = 4, ann_decay = 1e-3)
+
+res3 <- run_rolling_ann_h(df_3m, h = 3, cutoff = as.Date("2012-12-01"),
+                          ann_hid = 4, ann_decay = 1e-3)
+
+res6 <- run_rolling_ann_h(df_6m, h = 6, cutoff = as.Date("2012-12-01"),
+                          ann_hid = 4, ann_decay = 1e-3)
+
+res12 <- run_rolling_ann_h(df_12m, h = 12, cutoff = as.Date("2012-12-01"),
+                           ann_hid = 4, ann_decay = 1e-3)
+
+dplyr::bind_rows(res1, res3, res6, res12)
+
+set.seed(42)
+
+grid <- expand.grid(
+  size  = c(2, 3, 4, 6, 8),
+  decay = 10^seq(-5, -1, by = 1),  # 1e-5 ... 1e-1
+  maxit = c(300, 500, 800)
+)
+
+eval_grid <- function(df, h, cutoff) {
+  res <- lapply(seq_len(nrow(grid)), function(i){
+    g <- grid[i, ]
+    out <- run_rolling_ann_h(
+      df          = df,
+      h           = h,
+      cutoff      = cutoff,
+      ann_hid     = g$size,
+      ann_decay   = g$decay,
+      ann_maxit   = g$maxit,
+      use_rw_drift = FALSE
+    )
+    cbind(grid[i, ], as.data.frame(out))
+  })
+  dplyr::bind_rows(res)
+}
+
+# Example: tune for 3-month horizon
+tune3 <- eval_grid(df_3m, h = 3, cutoff = as.Date("2012-12-01"))
+
+# Rank by RMSE (primary) then DA (secondary)
+best3 <- tune3 %>%
+  dplyr::arrange(RMSE_ANN, dplyr::desc(DA_ANN)) %>%
+  dplyr::slice(1)
+
+best3
+
+tune1 <- eval_grid(df_1m, h = 1, cutoff = as.Date("2012-12-01"))
+
+# Rank by RMSE (primary) then DA (secondary)
+best1 <- tune1 %>%
+  dplyr::arrange(RMSE_ANN, dplyr::desc(DA_ANN)) %>%
+  dplyr::slice(1)
+
+best1
+
+```
+
