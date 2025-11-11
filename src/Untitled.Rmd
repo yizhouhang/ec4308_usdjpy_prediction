@@ -1,0 +1,167 @@
+---
+title: "ensemble_rf_ar"
+author: "Erica"
+date: "2025-11-11"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+suppressPackageStartupMessages({
+  library(randomForest)
+  library(dplyr)
+  library(tibble)
+  library(purrr)
+  library(readr)
+  library(leaps)
+  library(glmnet)       
+  library(forecast)
+})
+
+fit_predict_post_lasso_bic <- function(X_tr_s, y_tr, X_te_s, alpha = 1) {
+  cat("  [Post-LASSO(BIC)] select by lasso(BIC) then refit OLS...\n")
+  lasso <- fit_predict_lasso_bic(X_tr_s, y_tr, X_te_s, alpha = alpha)
+  sel_idx <- which(lasso$beta != 0)
+  if (!length(sel_idx)) {
+    mu <- mean(y_tr)
+    return(list(pred_tr = rep(mu, nrow(X_tr_s)),
+                pred_te = rep(mu, nrow(X_te_s)),
+                selected = character(0),
+                lambda_star = lasso$lambda_star))
+  }
+  Xtr <- X_tr_s[, sel_idx, drop = FALSE]
+  Xte <- X_te_s[, sel_idx, drop = FALSE]
+  dftr <- data.frame(y = y_tr, as.data.frame(Xtr))
+  fit  <- lm(y ~ ., data = dftr)
+  list(
+    pred_tr = as.numeric(predict(fit, newdata = dftr)),
+    pred_te = as.numeric(predict(fit, newdata = data.frame(as.data.frame(Xte)))),
+    selected = colnames(Xtr),
+    lambda_star = lasso$lambda_star
+  )
+}
+standardize_train_test <- function(X_tr, X_te) {
+  mu  <- apply(X_tr, 2, mean)
+  sdv <- apply(X_tr, 2, sd)
+  sdv[!is.finite(sdv) | sdv == 0] <- 1
+  X_tr_s <- scale(X_tr, center = mu, scale = sdv)
+  X_te_s <- scale(X_te, center = mu, scale = sdv)
+  list(X_tr_s = as.matrix(X_tr_s), X_te_s = as.matrix(X_te_s))
+}
+
+# ====== ROLLING ENSEMBLE (Post-LASSO + RF residuals) ======
+run_rolling_hybrid <- function(df_3m, h = 3) {
+  cutoff <- as.Date('2012-12-01')
+  W <- df_3m %>%
+    filter(date <= cutoff, !is.na(Y_log_return_3m), !is.na(monthly_return_lag1)) %>%
+    nrow()
+  idx_cut <- which(df_3m$date == cutoff)
+  i_start <- idx_cut + h
+
+  n <- nrow(df_3m)
+  yhat_ar1       <- rep(NA_real_, n)
+  yhat_rw0       <- rep(0, n)
+  yhat_rw_drift  <- rep(NA_real_, n)
+  yhat_hybrid    <- rep(NA_real_, n)
+
+  for (i in seq_len(n)) {
+    tr_end   <- i - h
+    tr_start <- tr_end - W + 1
+    if (tr_start < 1) next
+
+    # AR(1) baseline
+    fit <- lm(Y_log_return_3m ~ monthly_return_lag1,
+              data = df_3m[tr_start:tr_end, ])
+    yhat_ar1[i] <- predict(fit, newdata = df_3m[i, , drop = FALSE])
+
+    mu_h <- mean(df_3m[tr_start:tr_end, "Y_log_return_3m", drop = TRUE], na.rm = TRUE)
+    yhat_rw_drift[i] <- mu_h
+
+    # HYBRID: Post-LASSO(BIC) + RF residuals
+    X_cols <- setdiff(names(df_3m), c("date", "Y_log_return_3m"))
+    df_tr  <- df_3m[tr_start:tr_end, c("Y_log_return_3m", X_cols), drop = FALSE]
+    df_te  <- df_3m[i, c("Y_log_return_3m", X_cols), drop = FALSE]
+
+    X_tr_raw <- df_tr[, X_cols, drop = FALSE]
+    y_tr     <- df_tr$Y_log_return_3m
+    good_tr  <- is.finite(y_tr) & apply(X_tr_raw, 1, function(r) all(is.finite(r)))
+    if (!any(good_tr)) next
+    X_tr_raw <- X_tr_raw[good_tr, , drop = FALSE]
+    y_tr     <- y_tr[good_tr]
+
+    X_te_raw <- df_te[, X_cols, drop = FALSE]
+    if (!all(is.finite(X_te_raw))) next
+
+    std     <- standardize_train_test(X_tr_raw, X_te_raw)
+    X_tr_s  <- std$X_tr_s
+    X_te_s  <- std$X_te_s
+
+    pl <- fit_predict_post_lasso_bic(X_tr_s, y_tr, X_te_s, alpha = 1)
+
+    resid_tr <- y_tr - pl$pred_tr
+    rf_model <- randomForest(x = X_tr_raw, y = resid_tr, importance = TRUE)
+    rf_resid_te <- predict(rf_model, newdata = X_te_raw)
+
+    yhat_hybrid[i] <- as.numeric(pl$pred_te + rf_resid_te)
+  }
+
+  # metrics
+  oos <- df_3m %>%
+    mutate(yhat_ar1 = yhat_ar1,
+           yhat_rw0 = yhat_rw0,
+           yhat_rw_drift = yhat_rw_drift,
+           yhat_hybrid = yhat_hybrid) %>%
+    filter(!is.na(yhat_ar1) & !is.na(yhat_hybrid))
+
+  rmse <- function(e) sqrt(mean(e^2))
+  e_ar1   <- oos$Y_log_return_3m - oos$yhat_ar1
+  e_rw0   <- oos$Y_log_return_3m - oos$yhat_rw0
+  e_rw_dr <- oos$Y_log_return_3m - oos$yhat_rw_drift
+  e_hy    <- oos$Y_log_return_3m - oos$yhat_hybrid
+
+  da <- function(y, yhat, drop_zero = TRUE) {
+    sy <- sign(y); sf <- sign(yhat)
+    ok <- is.finite(sy) & is.finite(sf)
+    if (drop_zero) ok <- ok & sy != 0 & sf != 0
+    mean(sy[ok] == sf[ok])
+  }
+
+  DA_AR1      <- da(oos$Y_log_return_3m, oos$yhat_ar1, TRUE)
+  DA_RW0      <- da(oos$Y_log_return_3m, oos$yhat_rw0, TRUE)
+  DA_RW_DRIFT <- da(oos$Y_log_return_3m, oos$yhat_rw_drift, TRUE)
+  DA_HYBRID   <- da(oos$Y_log_return_3m, oos$yhat_hybrid, TRUE)
+
+  tibble::tibble(
+    horizon              = paste0(h, "m"),
+    window_W             = W,
+    first_decision_date  = df_3m$date[i_start],
+    n_oos                = nrow(oos),
+    RMSE_AR1             = rmse(e_ar1),
+    RMSE_RW0             = rmse(e_rw0),
+    RMSE_RW_DRIFT        = rmse(e_rw_dr),
+    RMSE_HYBRID          = rmse(e_hy),
+    R2_OOS_AR1_vs_RW0    = 1 - sum(e_ar1^2) / sum(e_rw0^2),
+    R2_OOS_HY_vs_RW0     = 1 - sum(e_hy^2)  / sum(e_rw0^2),
+    DA_AR1               = DA_AR1,
+    DA_RW0               = DA_RW0,
+    DA_RW_DRIFT          = DA_RW_DRIFT,
+    DA_HYBRID            = DA_HYBRID
+  )
+}
+
+
+```
+
+```{r}
+df_3m <- read_csv("../data/df_3m_lag.csv", show_col_types = FALSE) %>%
+  select(date, Y_log_return_3m, monthly_return_lag1) %>%
+  arrange(date) %>%
+  filter(!is.na(Y_log_return_3m), !is.na(monthly_return_lag1))
+h <- 3
+summary_tbl <- run_rolling_hybrid(df_3m, h = h)
+print(summary_tbl)
+
+```
