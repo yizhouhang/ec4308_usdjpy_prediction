@@ -1,0 +1,232 @@
+---
+title: "rf_var_importance"
+output: html_document
+date: "2025-11-12"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+
+```
+
+
+```{r}
+load("/Users/judy/Desktop/EC4308/ec4308_usdjpy_result/rf_rolling_results.RData")
+load("/Users/judy/Desktop/EC4308/ec4308_usdjpy_result/rf_tune_rolling_results.RData")
+
+importance_list_1m <- results_list$pred1m$importance_history
+importance_list_3m <- results_list_rf_roll$pred3m$importance_history
+importance_list_6m <- results_list$pred6m$importance_history
+importance_list_12m <- results_list$pred12m$importance_history
+
+
+average_importance <- function(importance_list) {
+  # average importance
+  imp_avg <- Reduce("+", importance_list) / length(importance_list)
+  
+  df <- data.frame(Variable = rownames(imp_avg), imp_avg, row.names = NULL)
+  df <- df %>% rename(`%IncMSE` = X.IncMSE, IncNodePurity = IncNodePurity)
+  
+  df
+}
+
+# setwd("/Users/judy/Desktop/EC4308/ec4308_usdjpy_prediction/src")
+var_labels <- read.csv("../data/imp_var.csv")
+imp_1m  <- average_importance(importance_list_1m) %>% mutate(Horizon = "1m") %>%
+  left_join(var_labels, by = c("Variable" = "code")) %>%
+  mutate(Variable_label = ifelse(!is.na(meaning), meaning, Variable))
+imp_3m  <- average_importance(importance_list_3m)  %>% mutate(Horizon = "3m") %>% mutate(Horizon = "3m") %>%
+  left_join(var_labels, by = c("Variable" = "code")) %>%
+  mutate(Variable_label = ifelse(!is.na(meaning), meaning, Variable))
+imp_6m  <- average_importance(importance_list_6m)  %>% mutate(Horizon = "6m") %>% mutate(Horizon = "6m") %>%
+  left_join(var_labels, by = c("Variable" = "code")) %>%
+  mutate(Variable_label = ifelse(!is.na(meaning), meaning, Variable))
+imp_12m <- average_importance(importance_list_12m) %>% mutate(Horizon = "12m") %>% mutate(Horizon = "12m") %>%
+  left_join(var_labels, by = c("Variable" = "code")) %>%
+  mutate(Variable_label = ifelse(!is.na(meaning), meaning, Variable))
+
+importance_all <- bind_rows(imp_1m, imp_3m, imp_6m, imp_12m)
+```
+
+```{r}
+library(dplyr)
+library(ggplot2)
+library(forcats)
+library(tidytext)
+library(scales)
+
+# specify the desired facet order
+importance_all$Horizon <- factor(
+  importance_all$Horizon,
+  levels = c("1m", "3m", "6m", "12m")
+)
+
+# reorder and take top 10 variables per horizon
+top_vars <- importance_all %>%
+  group_by(Horizon) %>%
+  slice_max(order_by = `%IncMSE`, n = 10) %>%
+  arrange(Horizon, desc(`%IncMSE`)) %>%
+  mutate(
+    Variable_label = reorder_within(Variable_label, `%IncMSE`, Horizon)
+  ) %>%
+  ungroup()
+
+
+# plot sorted bars with facets in correct horizon order
+ggplot(top_vars, aes(x = `%IncMSE`, 
+                     y = fct_reorder(Variable_label, `%IncMSE`), 
+                     fill = Horizon)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~ Horizon, scales = "free_y") +
+  scale_y_reordered() +
+  labs(
+    title = "Random Forest Variable Importance",
+    x = "% Increase in MSE (higher = more important)",
+    y = "Variable"
+  ) +
+  theme_minimal(base_size = 9)
+```
+
+```{r}
+setwd("/Users/judy/Desktop/EC4308/ec4308_usdjpy_prediction/src")
+ann_1m <- read.csv("../data/ann_err_tbl1.csv")
+ann_1m$rw_forecast <- dplyr::lag(ann_1m$y)
+ann_1m$date <- as.Date(ann_1m$date, format = "%Y-%m-%d")
+
+rf_3m <- read.csv("../data/rf_tune_err_3m.csv")
+rf_3m$rw_forecast <- dplyr::lag(rf_3m$Actual)
+rf_3m$Date <- as.Date(rf_3m$Date, format = "%Y-%m-%d")
+
+rf_6m <- read.csv("../data/rf_err_6m.csv")
+rf_6m$rw_forecast <- dplyr::lag(rf_6m$Actual)
+rf_6m$Date <- as.Date(rf_6m$Date, format = "%Y-%m-%d")
+
+rf_12m <- read.csv("../data/rf_err_12m.csv")
+rf_12m$rw_forecast <- dplyr::lag(rf_12m$Actual)
+rf_12m$Date <- as.Date(rf_12m$Date, format = "%Y-%m-%d")
+
+```
+
+```{r}
+ggplot(ann_1m, aes(x = date)) +
+  geom_line(aes(y = y, color = "Actual Return"), size = 0.7) +
+  geom_line(aes(y = yhat, color = "Best Model Return"), size = 0.7) +
+  geom_line(aes(y = rw_forecast, color = "Random Walk Return"), size = 0.5, linetype = "dashed") +
+  scale_color_manual(
+    values = c(
+      "Actual Return" = "royalblue3",    
+      "Best Model Return" = "red3",  
+      "Random Walk Return" = "grey29"  
+    )
+  ) +
+  scale_x_date(
+    breaks = seq(as.Date("2012-01-01"), as.Date("2022-12-31"), by = "2 years"),
+    labels = date_format("%Y")
+  ) +
+  labs(
+    title = "Actual vs Predicted vs Random Walk Log Returns (1 Month)",
+    x = "Time",
+    y = "Log Return",
+    color = ""
+  ) +
+  theme_minimal(base_size = 9) +
+  theme(
+    plot.title = element_text(size = 16, face = "bold", hjust = 0.5),
+    legend.position = "bottom",
+    legend.text = element_text(size = 12)
+  )
+```
+
+```{r}
+ggplot(rf_3m, aes(x = Date)) +
+  geom_line(aes(y = Actual, color = "Actual Return"), size = 0.7) +
+  geom_line(aes(y = Forecast, color = "Best Model Return"), size = 0.7) +
+  geom_line(aes(y = rw_forecast, color = "Random Walk Return"), size = 0.5, linetype = "dashed") +
+  scale_color_manual(
+    values = c(
+      "Actual Return" = "royalblue3",    
+      "Best Model Return" = "red3",  
+      "Random Walk Return" = "grey29"  
+    )
+  ) +
+  scale_x_date(
+    breaks = seq(as.Date("2012-01-01"), as.Date("2022-12-31"), by = "2 years"),
+    labels = date_format("%Y")
+  ) +
+  labs(
+    title = "Actual vs Predicted vs Random Walk Log Returns (3 Month)",
+    x = "Time",
+    y = "Log Return",
+    color = ""
+  ) +
+  theme_minimal(base_size = 9) +
+  theme(
+    plot.title = element_text(size = 16, face = "bold", hjust = 0.5),
+    legend.position = "bottom",
+    legend.text = element_text(size = 12)
+  )
+```
+
+```{r}
+ggplot(rf_6m, aes(x = Date)) +
+  geom_line(aes(y = Actual, color = "Actual Return"), size = 0.7) +
+  geom_line(aes(y = Forecast, color = "Best Model Return"), size = 0.7) +
+  geom_line(aes(y = rw_forecast, color = "Random Walk Return"), size = 0.5, linetype = "dashed") +
+  scale_color_manual(
+    values = c(
+      "Actual Return" = "royalblue3",    
+      "Best Model Return" = "red3",  
+      "Random Walk Return" = "grey29"  
+    )
+  ) +
+  scale_x_date(
+    breaks = seq(as.Date("2012-01-01"), as.Date("2022-12-31"), by = "2 years"),
+    labels = date_format("%Y")
+  ) +
+  labs(
+    title = "Actual vs Predicted vs Random Walk Log Returns (6 Month)",
+    x = "Time",
+    y = "Log Return",
+    color = ""
+  ) +
+  theme_minimal(base_size = 9) +
+  theme(
+    plot.title = element_text(size = 16, face = "bold", hjust = 0.5),
+    legend.position = "bottom",
+    legend.text = element_text(size = 12)
+  )
+```
+
+```{r}
+ggplot(rf_12m, aes(x = Date)) +
+  geom_line(aes(y = Actual, color = "Actual Return"), size = 0.7) +
+  geom_line(aes(y = Forecast, color = "Best Model Return"), size = 0.7) +
+  geom_line(aes(y = rw_forecast, color = "Random Walk Return"), size = 0.5, linetype = "dashed") +
+  scale_color_manual(
+    values = c(
+      "Actual Return" = "royalblue3",    
+      "Best Model Return" = "red3",  
+      "Random Walk Return" = "grey29"  
+    )
+  ) +
+  scale_x_date(
+    breaks = seq(as.Date("2012-01-01"), as.Date("2022-12-31"), by = "2 years"),
+    labels = date_format("%Y")
+  ) +
+  labs(
+    title = "Actual vs Predicted vs Random Walk Log Returns (12 Month)",
+    x = "Time",
+    y = "Log Return",
+    color = ""
+  ) +
+  theme_minimal(base_size = 9) +
+  theme(
+    plot.title = element_text(size = 16, face = "bold", hjust = 0.5),
+    legend.position = "bottom",
+    legend.text = element_text(size = 12)
+  )
+```

@@ -11,29 +11,10 @@ knitr::opts_chunk$set(echo = TRUE)
 ```{r}
 #install.packages("sandwich")
 library(sandwich) #library to estimate variance for DM test regression using NeweyWest()
-
-########### 1m: AR1 vs ANN ###########
-# squared loss for different methods
-lpl1c=(oosy-prlasso1c$pred)^2
-lrf1c=(oosy-rf1c$pred)^2
-# loss differentials for different horizons (PLASSO-RF)
-dplrf1=lpl1c-lrf1c
-
-#Create ts object containing loss differentials
-dtplrf.ts=ts(cbind(dplrf1,dplrf3,dplrf6,dplrf12), start=c(2001,1), end=c(2015,12), freq=12)
-#Plot them to examine stationarity:
-colnames(dtplrf.ts)=c("1-step dt","3-step dt","6-step dt","12-step dt")
-plot.ts(dtplrf.ts, main="Loss differential PLASSO-RF",cex.axis=1.8)
-
-#DM regressions
-dmplrf1=lm(dplrf1~1) #regression
-acf(dmplrf1$residuals) #check serial correlation of residuals - number of significant autocorrelations is a good guess for number lags included in the HAC variance estimator
-dmplrf1$coefficients/sqrt(NeweyWest(dmplrf1,lag=6)) #form the DM t-statistic
-
 ```
 
 ```{r}
-########### 1m: AR1 vs ANN ###########
+########### 1m: ANN vs AR1 ###########
 # squared loss for different methods
 setwd("/Users/judy/Desktop/EC4308/ec4308_usdjpy_prediction/src")
 ar1_1m <- read.csv("../data/ar1_err_tbl1.csv")
@@ -42,18 +23,18 @@ ann_1m <- read.csv("../data/ann_err_tbl1.csv")
 ann_1m_rmse <- ann_1m$error^2
 
 # loss differentials for different horizons
-ld_1m <- ar1_1m_rmse - ann_1m_rmse
+ld_1m <- ann_1m_rmse - ar1_1m_rmse
 
 #Create ts object containing loss differentials
 rmse_differential=ts(ld_1m, start=c(2013,1,1), end=c(2022,12,1), freq=12)
 #Plot them to examine stationarity:
-plot.ts(rmse_differential, main="Loss differential AR1 vs ANN - 1m",cex.axis=1.8)
+plot.ts(rmse_differential, main="Loss differential ANN vs AR1 - 1m",cex.axis=1.8)
 
 #DM regressions
 dm1m=lm(ld_1m~1) #regression
 acf(dm1m$residuals) #check serial correlation of residuals - number of significant autocorrelations is a good guess for number lags included in the HAC variance estimator
 dm1m$coefficients/sqrt(NeweyWest(dm1m,lag=4)) #form the DM t-statistic
-# DM t-statistic = -0.04543917
+# DM t-statistic = 0.04543917
 ```
 
 ```{r}
