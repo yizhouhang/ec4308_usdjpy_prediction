@@ -16,23 +16,70 @@ library(tidyr)
 ```
 
 ```{r}
-roll_pcr_bic_pls <- function(dat, target_col, pred_cols, h, cutoff_date, Kmax = 10) {
-  d <- dat %>%
-    select(date, all_of(target_col), all_of(pred_cols)) %>%
-    arrange(date) %>%
-    drop_na(!!rlang::sym(target_col), all_of(pred_cols))
+inspect_pcr_components <- function(fit, Kstar = NULL, topN = 10) {
+  stopifnot(inherits(fit, "mvr"))
+  L <- as.matrix(pls::loadings(fit))                 # p x Kcap (may be 0 cols)
+  Kcap <- if (length(dim(L)) == 0) 0L else ncol(L)
+  vx <- as.numeric(pls::explvar(fit))                # % X variance per PC
+  cum_vx <- if (length(vx)) cumsum(vx) else numeric(0)
+  T_scores <- if (Kcap > 0) as.matrix(pls::scores(fit)) else matrix(numeric(0),0,0)
 
-  W <- d %>% filter(date <= cutoff_date) %>% nrow()
+  if (is.null(Kstar)) Kstar <- Kcap
+  Kstar <- max(0L, min(Kstar, Kcap))
+
+  pc_loadings <-
+    if (Kstar > 0) {
+      tibble::tibble(
+        variable = rownames(L),
+        !!!setNames(as.list(as.data.frame(L[, 1:Kstar, drop = FALSE])), paste0("PC", seq_len(Kstar)))
+      )
+    } else tibble::tibble(variable = character(0))
+
+  vx_report <-
+    if (length(vx)) tibble::tibble(PC = paste0("PC", seq_along(vx)),
+                                   var_explained_pct = vx, cum_pct = cum_vx)
+    else tibble::tibble(PC = character(0), var_explained_pct = numeric(0), cum_pct = numeric(0))
+
+  top_contrib <-
+    if (Kcap > 0) {
+      dplyr::bind_rows(lapply(seq_len(Kcap), function(k){
+        w <- L[,k]; contrib <- 100*(w^2)/sum(w^2)
+        idx <- order(contrib, decreasing = TRUE)
+        take <- head(idx, min(topN, length(idx)))
+        tibble::tibble(PC = paste0("PC", k),
+                       variable = rownames(L)[take],
+                       loading = w[take],
+                       contrib_pct = contrib[take])
+      }))
+    } else tibble::tibble(PC=character(0), variable=character(0), loading=numeric(0), contrib_pct=numeric(0))
+
+  list(pc_loadings=pc_loadings, vx_report=vx_report, top_contrib=top_contrib,
+       scores=T_scores, ncomp=Kcap)
+}
+
+# ---------- rolling PCR with BIC; captures PC tables from first good window ----------
+roll_pcr_bic_pls <- function(dat, target_col, pred_cols, h, cutoff_date, Kmax = 10,
+                             Kstar_report = 3, topN_report = 8) {
+  d <- dat %>%
+    dplyr::select(date, dplyr::all_of(target_col), dplyr::all_of(pred_cols)) %>%
+    dplyr::arrange(date) %>%
+    tidyr::drop_na(!!rlang::sym(target_col), dplyr::all_of(pred_cols))
+
+  W <- d %>% dplyr::filter(date <= cutoff_date) %>% nrow()
   if (W < 12) stop("Not enough rows before cutoff to form a window.")
 
   D0 <- cutoff_date %m+% months(h)
   i_start <- which(d$date == D0)
-  if (length(i_start) == 0) stop("First decision date not found in data (check dates).")
+  if (!length(i_start)) stop("First decision date not found (check dates).")
 
   n <- nrow(d)
   yhat_pcr <- rep(NA_real_, n)
   yhat_rw0 <- rep(0, n)
-  K_pick   <- rep(NA_integer_, n)   # <-- track K selected each decision
+  K_pick   <- rep(NA_integer_, n)
+
+  # holders for PC reporting
+  pc_info <- NULL
+  pc_window <- NULL
 
   for (i in i_start:n) {
     tr_end   <- i - h
@@ -41,33 +88,47 @@ roll_pcr_bic_pls <- function(dat, target_col, pred_cols, h, cutoff_date, Kmax = 
 
     tr_idx <- tr_start:tr_end
     y_tr   <- d[[target_col]][tr_idx]
-    X_tr   <- as.data.frame(d[tr_idx, pred_cols, drop = FALSE])
+    X_tr0  <- as.data.frame(d[tr_idx, pred_cols, drop = FALSE])
+
+    # drop zero-variance cols within TRAIN to ensure PCs exist
+    keep <- vapply(X_tr0, function(z) sd(z, na.rm=TRUE) > 0, logical(1))
+    if (!any(keep)) next
+    X_tr <- X_tr0[, keep, drop = FALSE]
 
     pnames <- paste0("P", seq_len(ncol(X_tr)))
     names(X_tr) <- pnames
+    df_tr <- data.frame(y = y_tr, X_tr)
 
     Kcap <- min(Kmax, ncol(X_tr), length(tr_idx) - 2)
     if (Kcap <= 0) next
 
-    df_tr <- data.frame(y = y_tr, X_tr)
-    fit   <- pls::pcr(y ~ ., data = df_tr, scale = TRUE, validation = "none", ncomp = Kcap)
+    fit <- pls::pcr(y ~ ., data = df_tr, scale = TRUE, validation = "none", ncomp = Kcap)
 
+    # capture PCs once from the first successful window
+    if (is.null(pc_info)) {
+      pc_info <- inspect_pcr_components(fit, Kstar = min(Kstar_report, Kcap), topN = topN_report)
+      pc_window <- list(train_start = d$date[tr_start], train_end = d$date[tr_end])
+    }
+
+    # BIC selection incl. K=0
     n_tr <- length(tr_idx)
-    mu0  <- mean(y_tr, na.rm = TRUE)
-    rss0 <- sum((y_tr - mu0)^2, na.rm = TRUE)
+    mu0  <- mean(y_tr, na.rm=TRUE)
+    rss0 <- sum((y_tr - mu0)^2, na.rm=TRUE)
     bic0 <- n_tr * log(rss0 / n_tr) + 1 * log(n_tr)
 
-    Ks    <- 1:Kcap
-    rssK  <- sapply(Ks, function(K) {
+    Ks   <- 1:Kcap
+    rssK <- sapply(Ks, function(K){
       yhat_trK <- drop(predict(fit, ncomp = K, newdata = df_tr))
-      sum((y_tr - yhat_trK)^2, na.rm = TRUE)
+      sum((y_tr - yhat_trK)^2, na.rm=TRUE)
     })
-    bicK  <- n_tr * log(rssK / n_tr) + (Ks + 1) * log(n_tr)
+    bicK <- n_tr * log(rssK / n_tr) + (Ks + 1) * log(n_tr)
 
     best_K <- which.min(c(bic0, bicK)) - 1
-    K_pick[i] <- best_K                     # <-- save K for this decision
+    K_pick[i] <- best_K
 
-    X_i <- as.data.frame(d[i, pred_cols, drop = FALSE])
+    # h-step forecast at decision time t = i - h (no look-ahead)
+    X_i0 <- as.data.frame(d[i - h, pred_cols, drop = FALSE])
+    X_i  <- X_i0[, keep, drop = FALSE]
     names(X_i) <- pnames
     df_i <- data.frame(y = NA_real_, X_i)
 
@@ -75,19 +136,18 @@ roll_pcr_bic_pls <- function(dat, target_col, pred_cols, h, cutoff_date, Kmax = 
   }
 
   oos <- d %>%
-    mutate(f_pcr = yhat_pcr,
-           f_rw0 = yhat_rw0,
-           K_selected = K_pick) %>%          # <-- expose K in OOS
-    filter(!is.na(f_pcr))
+    dplyr::mutate(f_pcr = yhat_pcr,
+                  f_rw0 = yhat_rw0,
+                  K_selected = K_pick) %>%
+    dplyr::filter(!is.na(f_pcr))
 
-  rmse <- function(y, yhat) sqrt(mean((y - yhat)^2, na.rm = TRUE))
+  rmse <- function(y, yhat) sqrt(mean((y - yhat)^2, na.rm=TRUE))
   e_pcr <- oos[[target_col]] - oos$f_pcr
   e_rw0 <- oos[[target_col]] - oos$f_rw0
 
-  # quick K summary (optional)
   K_summary <- oos %>%
-    count(K_selected, name = "n_decisions") %>%
-    arrange(K_selected)
+    dplyr::count(K_selected, name = "n_decisions") %>%
+    dplyr::arrange(K_selected)
 
   summary <- tibble::tibble(
     horizon = paste0(h, "m"),
@@ -96,11 +156,31 @@ roll_pcr_bic_pls <- function(dat, target_col, pred_cols, h, cutoff_date, Kmax = 
     n_oos = nrow(oos),
     RMSE_PCR = rmse(oos[[target_col]], oos$f_pcr),
     RMSE_RW0 = rmse(oos[[target_col]], oos$f_rw0),
-    R2_OOS_vs_RW0 = 1 - sum(e_pcr^2) / sum(e_rw0^2),
-    K_avg = mean(oos$K_selected, na.rm = TRUE)          # <-- average K chosen
+    R2_OOS_vs_RW0 = 1 - sum(e_pcr^2, na.rm=TRUE) / sum(e_rw0^2, na.rm=TRUE),
+    K_avg = mean(oos$K_selected, na.rm=TRUE)
   )
 
-  list(summary = summary, oos = oos, K_summary = K_summary)
+  # ensure pc_info fields exist even if no window succeeded
+  if (is.null(pc_info)) {
+    pc_info <- list(
+      pc_loadings = tibble::tibble(variable = character(0)),
+      vx_report   = tibble::tibble(PC = character(0), var_explained_pct = numeric(0), cum_pct = numeric(0)),
+      top_contrib = tibble::tibble(PC = character(0), variable = character(0), loading = numeric(0), contrib_pct = numeric(0)),
+      scores      = matrix(numeric(0), 0, 0),
+      ncomp       = 0L
+    )
+    pc_window <- list(train_start = NA, train_end = NA)
+  }
+
+  list(
+    summary   = summary,
+    oos       = oos,
+    K_summary = K_summary,
+    pc_loadings = pc_info$pc_loadings,
+    vx_report   = pc_info$vx_report,
+    top_contrib = pc_info$top_contrib,
+    pc_window   = pc_window
+  )
 }
 ```
 
@@ -149,7 +229,7 @@ base <- read_csv("../data/df_3m_lag.csv", show_col_types = FALSE) %>%
 target_col <- "Y_log_return_3m"
 pred_cols <- setdiff(names(base), c("date", target_col))
 h <- 3
-cutoff <- as.Date("2012-12-01")
+cutoff <- as.Date("2012-10-01")
 
 out_3m <- roll_pcr_bic_pls(base, target_col, pred_cols, h, cutoff, Kmax = 10)
 out_3m$summary
@@ -188,7 +268,7 @@ base <- read_csv("../data/df_6m_lag.csv", show_col_types = FALSE) %>%
 target_col <- "Y_log_return_6m"
 pred_cols <- setdiff(names(base), c("date", target_col))
 h <- 6
-cutoff <- as.Date("2012-12-01")
+cutoff <- as.Date("2012-07-01")
 
 out_6m <- roll_pcr_bic_pls(base, target_col, pred_cols, h, cutoff, Kmax = 10)
 out_6m$summary
@@ -218,7 +298,11 @@ tibble::tibble(
 ) -> da_summary
 
 print(da_summary)
+out_6m$K_summary
+out_6m$pc_report
 ```
+
+
 
 ```{r}
 base <- read_csv("../data/df_12m_lag.csv", show_col_types = FALSE) %>%
@@ -226,7 +310,7 @@ base <- read_csv("../data/df_12m_lag.csv", show_col_types = FALSE) %>%
 target_col <- "Y_log_return_12m"
 pred_cols <- setdiff(names(base), c("date", target_col))
 h <- 12
-cutoff <- as.Date("2012-12-01")
+cutoff <- as.Date("2012-01-01")
 out_12m <- roll_pcr_bic_pls(base, target_col, pred_cols, h, cutoff, Kmax = 10)
 out_12m$summary
 
@@ -256,6 +340,10 @@ tibble::tibble(
 
 print(da_summary)
 tab_sign
+out_12m$K_summary
+out_12m$pc_report
+out_12m$top_contrib
+
 ```
 
 ### fixed train test

@@ -127,7 +127,7 @@ df_3m <- read_csv("../data/df_3m_lag.csv", show_col_types = FALSE) %>%
 h <- 3
 
 # ---- rolling window size ----
-cutoff <- as.Date ('2012-12-01')
+cutoff <- as.Date ('2012-10-01')
 W <- df_3m %>%
   filter (date <= cutoff, !is.na(Y_log_return_3m),!is.na(monthly_return_lag1)) %>%
   nrow()
@@ -206,7 +206,7 @@ df_6m <- read_csv("../data/df_6m_lag.csv", show_col_types = FALSE) %>%
 h <- 6
 
 # ---- rolling window size ----
-cutoff <- as.Date ('2012-12-01')
+cutoff <- as.Date ('2012-07-01')
 W <- df_6m %>%
   filter (date <= cutoff, !is.na(Y_log_return_6m),!is.na(monthly_return_lag1)) %>%
   nrow()
@@ -285,7 +285,7 @@ df_12m <- read_csv("../data/df_12m_lag.csv", show_col_types = FALSE) %>%
 h <- 12
 
 # ---- rolling window size ----
-cutoff <- as.Date ('2012-12-01')
+cutoff <- as.Date ('2012-01-01')
 W <- df_12m %>%
   filter (date <= cutoff, !is.na(Y_log_return_12m),!is.na(monthly_return_lag1)) %>%
   nrow()

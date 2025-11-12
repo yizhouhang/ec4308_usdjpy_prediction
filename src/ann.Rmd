@@ -203,13 +203,13 @@ df_12m <- read_csv("../data/df_12m_lag.csv", show_col_types = FALSE) %>%
 res1 <- run_rolling_ann_h(df_1m, h = 1, cutoff = as.Date("2012-12-01"),
                           ann_hid = 4, ann_decay = 1e-3)
 
-res3 <- run_rolling_ann_h(df_3m, h = 3, cutoff = as.Date("2012-12-01"),
+res3 <- run_rolling_ann_h(df_3m, h = 3, cutoff = as.Date("2012-10-01"),
                           ann_hid = 4, ann_decay = 1e-3)
 
-res6 <- run_rolling_ann_h(df_6m, h = 6, cutoff = as.Date("2012-12-01"),
+res6 <- run_rolling_ann_h(df_6m, h = 6, cutoff = as.Date("2012-07-01"),
                           ann_hid = 4, ann_decay = 1e-3)
 
-res12 <- run_rolling_ann_h(df_12m, h = 12, cutoff = as.Date("2012-12-01"),
+res12 <- run_rolling_ann_h(df_12m, h = 12, cutoff = as.Date("2012-01-01"),
                            ann_hid = 4, ann_decay = 1e-3)
 
 dplyr::bind_rows(res1, res3, res6, res12)
@@ -240,7 +240,7 @@ eval_grid <- function(df, h, cutoff) {
 }
 
 # Example: tune for 3-month horizon
-tune3 <- eval_grid(df_3m, h = 3, cutoff = as.Date("2012-12-01"))
+tune3 <- eval_grid(df_3m, h = 3, cutoff = as.Date("2012-10-01"))
 
 # Rank by RMSE (primary) then DA (secondary)
 best3 <- tune3 %>%
@@ -252,7 +252,7 @@ best3
 res_best3 <- run_rolling_ann_h(
   df          = df_3m,
   h           = 3,
-  cutoff      = as.Date("2012-12-01"),
+  cutoff      = as.Date("2012-10-01"),
   ann_hid     = best3$size,
   ann_decay   = best3$decay,
   ann_maxit   = best3$maxit
@@ -268,7 +268,7 @@ err_tbl3 <- oos_best3 %>%
             error = y - yhat)
 
 #err_tbl3
-write.csv(err_tbl3, "../data/ann_err_tbl3.csv", row.names = FALSE)
+#write.csv(err_tbl3, "../data/ann_err_tbl3.csv", row.names = FALSE)
 
 ```
 
@@ -305,7 +305,7 @@ write.csv(err_tbl1, "../data/ann_err_tbl1.csv", row.names = FALSE)
 
 ```{r}
 # Example: tune for 3-month horizon
-tune6 <- eval_grid(df_6m, h = 6, cutoff = as.Date("2012-12-01"))
+tune6 <- eval_grid(df_6m, h = 6, cutoff = as.Date("2012-07-01"))
 
 # Rank by RMSE (primary) then DA (secondary)
 best6 <- tune6 %>%
@@ -317,7 +317,7 @@ best6
 res_best6 <- run_rolling_ann_h(
   df          = df_6m,
   h           = 6,
-  cutoff      = as.Date("2012-12-01"),
+  cutoff      = as.Date("2012-07-01"),
   ann_hid     = best6$size,
   ann_decay   = best6$decay,
   ann_maxit   = best6$maxit
@@ -333,12 +333,12 @@ err_tbl6 <- oos_best6 %>%
             error = y - yhat)
 
 #err_tbl3
-write.csv(err_tbl6, "../data/ann_err_tbl6.csv", row.names = FALSE)
+#write.csv(err_tbl6, "../data/ann_err_tbl6.csv", row.names = FALSE)
 ```
 
 ```{r}
 # Example: tune for 3-month horizon
-tune12 <- eval_grid(df_12m, h = 12, cutoff = as.Date("2012-12-01"))
+tune12 <- eval_grid(df_12m, h = 12, cutoff = as.Date("2012-01-01"))
 
 # Rank by RMSE (primary) then DA (secondary)
 best12 <- tune12 %>%
@@ -350,7 +350,7 @@ best12
 res_best12 <- run_rolling_ann_h(
   df          = df_12m,
   h           = 12,
-  cutoff      = as.Date("2012-12-01"),
+  cutoff      = as.Date("2012-01-01"),
   ann_hid     = best12$size,
   ann_decay   = best12$decay,
   ann_maxit   = best12$maxit
@@ -366,9 +366,80 @@ err_tbl12 <- oos_best12 %>%
             error = y - yhat)
 
 #err_tbl3
-write.csv(err_tbl12, "../data/ann_err_tbl12.csv", row.names = FALSE)
+#write.csv(err_tbl12, "../data/ann_err_tbl12.csv", row.names = FALSE)
 
 
 
 
 ```
+
+
+```{r}
+# ---- DM test (horizon-aware, squared-error loss by default) ----
+dm_test_oos <- function(errors_model, errors_bench, h = 1,
+                        power = 2, alternative = c("two.sided","less","greater")) {
+  alternative <- match.arg(alternative)
+  stopifnot(length(errors_model) == length(errors_bench))
+  # loss differential: model minus benchmark (positive => model worse if power=2)
+  d <- abs(errors_model)^power - abs(errors_bench)^power
+  d <- d[is.finite(d)]
+  n <- length(d); if (n < 5L) stop("Not enough OOS points for DM test")
+  dbar <- mean(d)
+
+  # Newey–West (Bartlett) HAC variance for overlapping h-step ahead: lag L = h-1
+  L <- max(0L, h - 1L)
+  dtil <- d - dbar
+  # autocovariance at lag k
+  acov <- function(k) sum(dtil[(k+1):n] * dtil[1:(n-k)]) / n
+  gamma0 <- acov(0)
+  if (L == 0) {
+    var_bar <- gamma0 / n
+  } else {
+    w <- 1 - (1:L) / (L + 1)              # Bartlett weights
+    gammas <- vapply(1:L, acov, numeric(1))
+    var_bar <- (gamma0 + 2 * sum(w * gammas)) / n
+  }
+  dm_stat <- dbar / sqrt(var_bar + 1e-12) # guard tiny var
+
+  # Small-sample correction (Harvey–Leybourne–Newbold, 1997)
+  hln_fac <- sqrt((n + 1 - 2*h + h*(h - 1)/n) / n)
+  dm_hln  <- dm_stat * hln_fac
+
+  pval <- switch(alternative,
+    "two.sided" = 2 * pnorm(-abs(dm_hln)),
+    "less"      = pnorm(dm_hln),
+    "greater"    = 1 - pnorm(dm_hln)
+  )
+  list(statistic = dm_hln, p.value = pval, mean_diff = dbar,
+       n = n, h = h, power = power,
+       alternative = alternative,
+       note = "Positive mean_diff => model loss > benchmark loss (with power=2).")
+}
+
+# ---- Helper to run DM(ANN vs RW0) from your res objects ----
+dm_from_res <- function(res_obj, target_col, yhat_col, h) {
+  oos <- attr(res_obj, "oos")
+  stopifnot(all(c(target_col, yhat_col) %in% names(oos)))
+  y   <- oos[[target_col]]
+  yh  <- oos[[yhat_col]]
+  e_m <- y - yh
+  e_b <- y - 0    # RW0 for returns
+  dm_test_oos(e_m, e_b, h = h, power = 2, alternative = "two.sided")
+}
+
+# ==== EXAMPLES WITH YOUR OBJECTS ====
+# Assuming res_best3 etc. (each created by run_rolling_ann_h(...), with attr(oos))
+# 1-month
+dm1  <- dm_from_res(res_best1,  target_col = "Y_log_return_1m",  yhat_col = "yhat_ann", h = 1)
+# 3-month
+dm3  <- dm_from_res(res_best3, target_col = "Y_log_return_3m",  yhat_col = "yhat_ann", h = 3)
+# 6-month
+dm6  <- dm_from_res(res_best6,  target_col = "Y_log_return_6m",  yhat_col = "yhat_ann", h = 6)
+# 12-month
+dm12 <- dm_from_res(res_best12, target_col = "Y_log_return_12m", yhat_col = "yhat_ann", h = 12)
+
+# Look at results
+dm1; dm3; dm6; dm12
+
+```
+

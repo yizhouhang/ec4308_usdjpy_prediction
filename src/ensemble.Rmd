@@ -16,7 +16,7 @@ suppressPackageStartupMessages({
 })
 ```
 
-
+ANN + AR1
 ```{r}
 # ---- standardization helper function because ANN is scale sensitive ----
 standardize_train_test <- function(X_tr, X_te){ 
@@ -30,7 +30,7 @@ standardize_train_test <- function(X_tr, X_te){
 }
 
 # ---- rmse definition ----
-rmse <- \(e) sqrt(mean(e^2))
+rmse <- function(e) sqrt(mean(e^2, na.rm = TRUE))
 
 # ---- directional accuracy definition = sign of y compared with sign of yhat
 da   <- function(y, yhat, drop_zero = TRUE){
@@ -120,23 +120,33 @@ run_vol_gated_ann_ar1 <- function(df,
                     linout = TRUE, maxit = ann_maxit, trace = FALSE)
     yhat_ann[i] <- as.numeric(predict(ann_fit, std$X_te_s))
 
-    # ----- Volatility-gated switch (causal) -----
-    # threshold = quantile of *past* rv within the training window
+    # --- Soft volatility weight instead of hard switch ---
     rv_hist <- rv[tr_start:tr_end]
-    thr <- stats::quantile(rv_hist[is.finite(rv_hist)], probs = vol_quantile, na.rm = TRUE, names = FALSE)
-    vol_now <- rv[tr_end + 1]  # the most recent vol available at decision time i (uses data up to t=i-1)
-    use_ann <- is.finite(vol_now) && is.finite(thr) && vol_now > thr
+    thr_q   <- vol_quantile
+    vol_now <- rv[tr_end + 1]
 
-    base_pred <- if (is.finite(yhat_ar1[i])) yhat_ar1[i] else 0  # fallback = RW0 if AR1 missing
-    yhat_ens[i] <- if (use_ann && is.finite(yhat_ann[i])) yhat_ann[i] else base_pred
+    # weight w in [0, wmax]: 0 at threshold, ramps up to wmax at extreme vol
+    wmax <- 1  # cap to protect RMSE
+    w <- 0
+    if (is.finite(vol_now) && any(is.finite(rv_hist))) {
+      F_hist <- ecdf(rv_hist[is.finite(rv_hist)])
+      p_now  <- F_hist(vol_now)
+      w <- (p_now - thr_q) / (1 - thr_q)
+      w <- max(0, min(wmax, w))
+    }
+
+    base_pred <- if (is.finite(yhat_ar1[i])) yhat_ar1[i] else 0
+    if (is.finite(yhat_ann[i])) {
+      yhat_ens[i] <- (1 - w) * base_pred + w * yhat_ann[i]
+    } else {
+      yhat_ens[i] <- base_pred
+    }
   }
-
-  # ----- OOS evaluation -----
   oos <- df %>%
     mutate(yhat_ar1 = yhat_ar1,
            yhat_ann = yhat_ann,
            yhat_ens = yhat_ens) %>%
-    filter(!is.na(yhat_ens))  # ensemble-defined rows
+    filter(!is.na(yhat_ens))
 
   y     <- oos[[target_col]]
   e_ar1 <- y - oos$yhat_ar1
@@ -157,7 +167,7 @@ run_vol_gated_ann_ar1 <- function(df,
     DA_ENSEMBLE          = da(y, oos$yhat_ens, TRUE)
   ) -> summary_tbl
 
-  attr(summary_tbl, "oos") <- oos  # keep predictions if you want to export
+  attr(summary_tbl, "oos") <- oos
   summary_tbl
 }
 
@@ -165,5 +175,610 @@ run_vol_gated_ann_ar1 <- function(df,
 
 
 ```{r}
+set.seed(42)
+library(readr)
+df_1m <- read_csv("../data/df_1m_lag.csv", show_col_types = FALSE) %>%
+  select(date, Y_log_return_1m, monthly_return_lag1) %>%
+  arrange(date) %>%
+  filter(!is.na(Y_log_return_1m), !is.na(monthly_return_lag1))
+
+df_3m <- read_csv("../data/df_3m_lag.csv", show_col_types = FALSE) %>%
+  select(date, Y_log_return_3m, monthly_return_lag1) %>%
+  arrange(date) %>%
+  filter(!is.na(Y_log_return_3m), !is.na(monthly_return_lag1))
+
+df_6m <- read_csv("../data/df_6m_lag.csv", show_col_types = FALSE) %>%
+  select(date, Y_log_return_6m, monthly_return_lag1) %>%
+  arrange(date) %>%
+  filter(!is.na(Y_log_return_6m), !is.na(monthly_return_lag1))
+
+df_12m <- read_csv("../data/df_12m_lag.csv", show_col_types = FALSE) %>%
+  select(date, Y_log_return_12m, monthly_return_lag1) %>%
+  arrange(date) %>%
+  filter(!is.na(Y_log_return_12m), !is.na(monthly_return_lag1))
+
+set.seed(42)
+
+# 1m: more data → longer window
+res1  <- run_vol_gated_ann_ar1(df_1m,  h=1,
+          cutoff=as.Date("2012-12-01"),
+          vol_window=60, vol_quantile=0.50,
+          ann_hid=4, ann_decay=1e-3, ann_maxit=500)
+
+# 3m: slightly shorter
+res3  <- run_vol_gated_ann_ar1(df_3m,  h=3,
+          cutoff=as.Date("2012-10-01"),
+          vol_window=48, vol_quantile=0.50)
+
+# 6m: shorter again
+res6  <- run_vol_gated_ann_ar1(df_6m,  h=6,
+          cutoff=as.Date("2012-07-01"),
+          vol_window=36, vol_quantile=0.50)
+
+# 12m: fewest effective samples → shortest window
+res12 <- run_vol_gated_ann_ar1(df_12m, h=12,
+          cutoff=as.Date("2012-01-01"),
+          vol_window=24, vol_quantile=0.50)
+
+
+dplyr::bind_rows(res1, res3, res6, res12)
 ```
+
+ANN + Random Forest
+```{r}
+suppressPackageStartupMessages({
+  library(dplyr)
+  library(nnet)
+  library(randomForest)
+  library(nnls)
+})
+standardize_train_test <- function(X_tr, X_te){
+  mu <- apply(X_tr, 2, mean); sdv <- apply(X_tr, 2, sd)
+  sdv[!is.finite(sdv) | sdv == 0] <- 1
+  list(
+    X_tr_s = as.matrix(scale(X_tr, center = mu, scale = sdv)),
+    X_te_s = as.matrix(scale(X_te, center = mu, scale = sdv))
+  )
+}
+rmse <- \(e) sqrt(mean(e^2, na.rm = TRUE))
+da   <- function(y, yhat, drop_zero = TRUE){
+  sy <- sign(y); sf <- sign(yhat)
+  ok <- is.finite(sy) & is.finite(sf)
+  if (drop_zero) ok <- ok & sy != 0 & sf != 0
+  mean(sy[ok] == sf[ok])
+}
+run_rolling_ann_rf_ens <- function(df, h = 1,
+                                   target_col = NULL,
+                                   predictors = NULL,
+                                   cutoff = as.Date("2012-12-01"),
+                                   method = c("equal","nnls","iew"),
+                                   burn = 100,     # for nnls/iew expanding/rolling warmup
+                                   iew_k = 120,    # lookback for inverse-error weights
+                                   ann_hid = 4, ann_decay = 1e-3, ann_maxit = 500,
+                                   rf_ntree = 500, rf_nodesize_frac = 0.05) {
+
+  method <- match.arg(method)
+  stopifnot(inherits(df$date, "Date"))
+  df <- df[order(df$date), ]
+
+  if (is.null(target_col)) target_col <- paste0("Y_log_return_", h, "m")
+  if (!(target_col %in% names(df))) stop("Target column '", target_col, "' not found.")
+
+  # predictor set (use all except date + target by default)
+  if (is.null(predictors)) predictors <- setdiff(names(df), c("date", target_col))
+  miss <- setdiff(predictors, names(df)); if (length(miss)) stop("Missing predictors: ", paste(miss, collapse=", "))
+
+  # window size W: rows ≤ cutoff with non-NA in target & predictors (train slices must be complete)
+  d0 <- df %>% select(date, all_of(target_col), all_of(predictors)) %>%
+        arrange(date) %>% tidyr::drop_na()
+  W <- dplyr::n_distinct(d0$date[d0$date <= cutoff])
+  if (W < 12) stop("Not enough rows before cutoff to form a window.")
+  idx_cut <- which(df$date == cutoff)
+  i_start <- idx_cut + h
+  n <- nrow(df)
+
+  # holders
+  yhat_ann <- yhat_rf <- yhat_ens <- rep(NA_real_, n)
+
+  for (i in seq_len(n)) {
+    tr_end   <- i - h
+    tr_start <- tr_end - W + 1
+    if (tr_start < 1) next
+
+    # build train/test slices with complete cases
+    d_tr <- df[tr_start:tr_end, c("date", target_col, predictors), drop = FALSE] %>% tidyr::drop_na()
+    d_te <- df[i,           c("date", target_col, predictors), drop = FALSE]
+    if (!nrow(d_tr)) next
+    if (any(!complete.cases(d_te))) next
+
+
+    num_X <- names(d_tr)[names(d_tr) %in% predictors & sapply(d_tr[, predictors, drop=FALSE], is.numeric)]
+    if (length(num_X) >= 1) {
+      X_tr <- as.matrix(d_tr[, num_X, drop = FALSE])
+      X_te <- as.matrix(d_te[, num_X, drop = FALSE])
+      y_tr <- d_tr[[target_col]]
+      std  <- standardize_train_test(X_tr, X_te)
+      fit_ann <- nnet(x = std$X_tr_s, y = y_tr,
+                      size = ann_hid, decay = ann_decay,
+                      linout = TRUE, maxit = ann_maxit, trace = FALSE)
+      yhat_ann[i] <- as.numeric(predict(fit_ann, std$X_te_s))
+    }
+
+    
+    Xtr_rf <- d_tr[, predictors, drop = FALSE]
+    Xte_rf <- d_te[, predictors, drop = FALSE]
+    for (nm in predictors) {
+      if (is.character(Xtr_rf[[nm]])) Xtr_rf[[nm]] <- as.factor(Xtr_rf[[nm]])
+      if (is.character(Xte_rf[[nm]])) Xte_rf[[nm]] <- as.factor(Xte_rf[[nm]])
+      # align factor levels
+      if (is.factor(Xtr_rf[[nm]])) {
+        Xte_rf[[nm]] <- factor(Xte_rf[[nm]], levels = levels(Xtr_rf[[nm]]))
+      }
+    }
+    y_tr <- d_tr[[target_col]]
+    nodesize <- max(5L, floor(rf_nodesize_frac * nrow(Xtr_rf)))
+    mtry     <- max(1L, floor(sqrt(ncol(Xtr_rf))))
+    fit_rf <- randomForest(x = Xtr_rf, y = y_tr,
+                           ntree = rf_ntree, mtry = mtry, nodesize = nodesize,
+                           importance = FALSE, keep.forest = TRUE)
+    yhat_rf[i] <- as.numeric(predict(fit_rf, newdata = Xte_rf))
+  }
+
+
+  oos <- df %>%
+    mutate(y        = .data[[target_col]],
+           yhat_ann = yhat_ann,
+           yhat_rf  = yhat_rf) %>%
+    filter(!is.na(yhat_ann) & !is.na(yhat_rf))
+
+  # equal-weight
+  if (method == "equal") {
+    oos$yhat_ens <- rowMeans(cbind(oos$yhat_ann, oos$yhat_rf))
+  }
+
+  # expanding NNLS (non-negative, sums to 1)
+  if (method == "nnls") {
+    P <- as.matrix(oos[, c("yhat_ann","yhat_rf")])
+    y <- oos$y
+    yhat <- rep(NA_real_, nrow(oos))
+    for (i in seq_len(nrow(oos))) {
+      if (i <= burn) next
+      j <- 1:(i-1)
+      fit <- nnls(P[j, , drop=FALSE], y[j])
+      w <- fit$x; sw <- sum(w); if (sw == 0) { w <- c(0.5,0.5) } else { w <- w / sw }
+      yhat[i] <- sum(P[i,] * w)
+    }
+    oos$yhat_ens <- yhat
+  }
+
+  # inverse-error rolling weighting (lookback = iew_k)
+  if (method == "iew") {
+    P <- as.matrix(oos[, c("yhat_ann","yhat_rf")])
+    y <- oos$y
+    yhat <- rep(NA_real_, nrow(oos))
+    for (i in seq_len(nrow(oos))) {
+      if (i <= iew_k) next
+      j <- (i-iew_k):(i-1)
+      E <- sweep(P[j, , drop=FALSE], 1, y[j], "-")
+      rm <- sqrt(colMeans(E^2, na.rm=TRUE))
+      w  <- 1/(rm^2); w[!is.finite(w)] <- 0
+      sw <- sum(w); if (sw == 0) { w <- c(0.5,0.5) } else { w <- w / sw }
+      yhat[i] <- sum(P[i,] * w)
+    }
+    oos$yhat_ens <- yhat
+  }
+
+  # ----------------- Evaluate -----------------
+  e_ann <- oos$y - oos$yhat_ann
+  e_rf  <- oos$y - oos$yhat_rf
+  e_ens <- oos$y - oos$yhat_ens
+
+  out <- tibble::tibble(
+    horizon         = paste0(h, "m"),
+    window_W        = W,
+    first_oos_date  = oos$date[1],
+    n_oos           = nrow(oos),
+    RMSE_ANN        = rmse(e_ann),
+    RMSE_RF         = rmse(e_rf),
+    RMSE_ENSEMBLE   = rmse(e_ens),
+    DA_ANN          = da(oos$y, oos$yhat_ann, TRUE),
+    DA_RF           = da(oos$y, oos$yhat_rf,  TRUE),
+    DA_ENSEMBLE     = da(oos$y, oos$yhat_ens, TRUE)
+  )
+  attr(out, "oos") <- oos
+  out
+}
+
+```
+
+
+```{r}
+set.seed(42)
+res1  <- run_rolling_ann_rf_ens(df_1m,  h=1, cutoff=as.Date("2012-12-01"), method="nnls")
+res3  <- run_rolling_ann_rf_ens(df_3m,  h=3, cutoff=as.Date("2012-10-01"), method="nnls")
+res6  <- run_rolling_ann_rf_ens(df_6m,  h=6, cutoff=as.Date("2012-07-01"), method="nnls")
+res12 <- run_rolling_ann_rf_ens(df_12m, h=12, cutoff=as.Date("2012-01-01"), method="nnls")
+dplyr::bind_rows(res1, res3, res6, res12)
+```
+
+```{r}
+suppressPackageStartupMessages({
+  library(dplyr)
+  library(tidyr)
+  library(nnet)
+  library(randomForest)
+})
+
+# --- helpers ---
+standardize_train_test <- function(X_tr, X_te){
+  mu  <- apply(X_tr, 2, mean)
+  sdv <- apply(X_tr, 2, sd); sdv[!is.finite(sdv) | sdv == 0] <- 1
+  list(
+    X_tr_s = as.matrix(scale(X_tr, center = mu, scale = sdv)),
+    X_te_s = as.matrix(scale(X_te, center = mu, scale = sdv))
+  )
+}
+rmse <- function(e) sqrt(mean(e^2, na.rm = TRUE))
+da   <- function(y, yhat, drop_zero = TRUE){
+  sy <- sign(y); sf <- sign(yhat)
+  ok <- is.finite(sy) & is.finite(sf)
+  if (drop_zero) ok <- ok & sy != 0 & sf != 0
+  mean(sy[ok] == sf[ok])
+}
+
+# =============================================================================
+# Rolling Hybrid: ANN base + RF on ANN residuals (y - yhat_ann)
+# =============================================================================
+run_rolling_ann_rf_resid <- function(df, h = 1,
+                                     target_col = NULL,
+                                     predictors = NULL,
+                                     cutoff = as.Date("2012-12-01"),
+                                     # ANN hyperparams
+                                     ann_hid = 4, ann_decay = 1e-3, ann_maxit = 500,
+                                     # RF hyperparams
+                                     rf_ntree = 500, rf_nodesize_frac = 0.05, rf_mtry = NULL,
+                                     seed = 42) {
+  stopifnot(inherits(df$date, "Date"))
+  set.seed(seed)
+  df <- df[order(df$date), ]
+
+  # Target + predictors
+  if (is.null(target_col)) target_col <- paste0("Y_log_return_", h, "m")
+  if (!(target_col %in% names(df))) stop("Target '", target_col, "' not in df.")
+  if (is.null(predictors)) predictors <- setdiff(names(df), c("date", target_col))
+  miss <- setdiff(predictors, names(df)); if (length(miss)) stop("Missing predictors: ", paste(miss, collapse=", "))
+
+  # Fixed training-window size W = rows up to cutoff with complete cases
+  d0 <- df %>% select(date, all_of(target_col), all_of(predictors)) %>%
+        arrange(date) %>% drop_na()
+  W <- dplyr::n_distinct(d0$date[d0$date <= cutoff])
+  if (W < 12) stop("Not enough rows before cutoff to form a window.")
+
+  idx_cut <- which(df$date == cutoff); if (!length(idx_cut)) stop("cutoff not found in df$date")
+  i_start <- idx_cut + h
+  n <- nrow(df)
+
+  # Holders
+  yhat_ann   <- rep(NA_real_, n)
+  yhat_resid <- rep(NA_real_, n)
+  yhat_hyb   <- rep(NA_real_, n)
+  y_rw0      <- rep(0, n)   # RW(0) for returns baseline
+
+  for (i in seq_len(n)) {
+    tr_end   <- i - h
+    tr_start <- tr_end - W + 1
+    if (tr_start < 1) next
+
+    # Train/Test slices (complete cases in TRAIN)
+    d_tr <- df[tr_start:tr_end, c("date", target_col, predictors), drop = FALSE] %>% drop_na()
+    d_te <- df[i,           c("date", target_col, predictors), drop = FALSE]
+    if (!nrow(d_tr)) next
+    if (any(!complete.cases(d_te))) next
+
+    # ---------- ANN (numeric-only + standardize on TRAIN) ----------
+    num_X <- names(d_tr)[names(d_tr) %in% predictors & sapply(d_tr[, predictors, drop=FALSE], is.numeric)]
+    if (!length(num_X)) next
+
+    X_tr <- as.matrix(d_tr[, num_X, drop = FALSE])
+    X_te <- as.matrix(d_te[, num_X, drop = FALSE])
+    y_tr <- d_tr[[target_col]]
+
+    std <- standardize_train_test(X_tr, X_te)
+    ann_fit <- nnet(x = std$X_tr_s, y = y_tr,
+                    size = ann_hid, decay = ann_decay,
+                    linout = TRUE, maxit = ann_maxit, trace = FALSE)
+
+    # ANN predictions (train + test)
+    yhat_tr_ann <- as.numeric(predict(ann_fit, std$X_tr_s))
+    yhat_te_ann <- as.numeric(predict(ann_fit, std$X_te_s))
+    yhat_ann[i] <- yhat_te_ann
+
+    # ---------- RF on residuals (can use numeric + factor) ----------
+    resid_tr <- y_tr - yhat_tr_ann
+    Xtr_rf <- d_tr[, predictors, drop = FALSE]
+    Xte_rf <- d_te[, predictors, drop = FALSE]
+
+    # Coerce char->factor and align levels
+    for (nm in predictors) {
+      if (is.character(Xtr_rf[[nm]])) Xtr_rf[[nm]] <- as.factor(Xtr_rf[[nm]])
+      if (is.character(Xte_rf[[nm]])) Xte_rf[[nm]] <- as.factor(Xte_rf[[nm]])
+      if (is.factor(Xtr_rf[[nm]])) Xte_rf[[nm]] <- factor(Xte_rf[[nm]], levels = levels(Xtr_rf[[nm]]))
+    }
+
+    nodesize <- max(5L, floor(rf_nodesize_frac * nrow(Xtr_rf)))
+    mtry     <- if (is.null(rf_mtry)) max(1L, floor(sqrt(ncol(Xtr_rf)))) else rf_mtry
+
+    rf_fit <- randomForest(x = Xtr_rf, y = resid_tr,
+                           ntree = rf_ntree, mtry = mtry, nodesize = nodesize,
+                           keep.forest = TRUE, importance = FALSE)
+    yhat_resid[i] <- as.numeric(predict(rf_fit, newdata = Xte_rf))
+
+    # ---------- Hybrid = ANN + RF(residual) ----------
+    yhat_hyb[i] <- yhat_te_ann + yhat_resid[i]
+  }
+
+  # ----------------- OOS evaluation -----------------
+  oos <- df %>%
+    mutate(y = .data[[target_col]],
+           yhat_ann = yhat_ann,
+           yhat_hyb = yhat_hyb,
+           yhat_rw0 = y_rw0) %>%
+    filter(is.finite(yhat_hyb))
+
+  e_ann <- oos$y - oos$yhat_ann
+  e_hyb <- oos$y - oos$yhat_hyb
+  e_rw0 <- oos$y - oos$yhat_rw0
+
+  out <- tibble::tibble(
+    horizon             = paste0(h, "m"),
+    window_W            = W,
+    first_oos_date      = oos$date[1],
+    n_oos               = nrow(oos),
+    RMSE_RW0            = rmse(e_rw0),
+    RMSE_ANN            = rmse(e_ann),
+    RMSE_HYBRID         = rmse(e_hyb),
+    R2_OOS_HYB_vs_RW0   = 1 - sum(e_hyb^2, na.rm=TRUE) / sum(e_rw0^2, na.rm=TRUE),
+    DA_RW0              = da(oos$y, oos$yhat_rw0, TRUE),
+    DA_ANN              = da(oos$y, oos$yhat_ann, TRUE),
+    DA_HYBRID           = da(oos$y, oos$yhat_hyb, TRUE)
+  )
+  attr(out, "oos") <- oos
+  out
+}
+
+```
+
+```{r}
+res1h  <- run_rolling_ann_rf_ens(df_1m,  h=1, cutoff=as.Date("2012-12-01"), method="nnls")
+res3h  <- run_rolling_ann_rf_ens(df_3m,  h=3, cutoff=as.Date("2012-10-01"), method="nnls")
+res6h  <- run_rolling_ann_rf_ens(df_6m,  h=6, cutoff=as.Date("2012-07-01"), method="nnls")
+res12h <- run_rolling_ann_rf_ens(df_12m, h=12, cutoff=as.Date("2012-01-01"), method="nnls")
+```
+
+```{r}
+res1h
+res3h
+res6h
+res12h
+```
+
+
+```{r}
+suppressPackageStartupMessages({
+  library(dplyr)
+  library(tidyr)
+  library(nnet)
+  library(randomForest)
+})
+
+# ---------- helpers ----------
+standardize_train_test <- function(X_tr, X_te){
+  mu  <- apply(X_tr, 2, mean)
+  sdv <- apply(X_tr, 2, sd); sdv[!is.finite(sdv) | sdv == 0] <- 1
+  list(
+    X_tr_s = as.matrix(scale(X_tr, center = mu, scale = sdv)),
+    X_te_s = as.matrix(scale(X_te, center = mu, scale = sdv))
+  )
+}
+rmse <- \(e) sqrt(mean(e^2, na.rm = TRUE))
+da   <- function(y, yhat, drop_zero = TRUE){
+  sy <- sign(y); sf <- sign(yhat)
+  ok <- is.finite(sy) & is.finite(sf)
+  if (drop_zero) ok <- ok & sy != 0 & sf != 0
+  mean(sy[ok] == sf[ok])
+}
+
+# ---------- Volatility-gated ANN vs RF (rolling, horizon-aware) ----------
+run_vol_gated_ann_rf <- function(df,
+                                 h = 1,
+                                 target_col   = NULL,
+                                 predictors   = NULL,           # features for both models
+                                 cutoff       = as.Date("2012-12-01"),
+                                 vol_window   = 12,             # rolling mean |y| lookback
+                                 vol_quantile = 0.70,           # threshold for gating
+                                 wmax         = 0.80,           # max extra weight on RF
+                                 # ANN
+                                 ann_hid = 4, ann_decay = 1e-3, ann_maxit = 500,
+                                 # RF
+                                 rf_ntree = 500, rf_nodesize_frac = 0.05, rf_mtry = NULL,
+                                 seed = 42){
+
+  stopifnot(inherits(df$date, "Date"))
+  set.seed(seed)
+  df <- df[order(df$date), ]
+
+  # target & predictors
+  if (is.null(target_col)) target_col <- paste0("Y_log_return_", h, "m")
+  if (!(target_col %in% names(df))) stop("Target '", target_col, "' not found.")
+  if (is.null(predictors)) predictors <- setdiff(names(df), c("date", target_col))
+  miss <- setdiff(predictors, names(df)); if (length(miss)) stop("Missing predictors: ", paste(miss, collapse = ", "))
+
+  # fixed training-window size W (complete rows up to cutoff)
+  d0 <- df %>% select(date, all_of(target_col), all_of(predictors)) %>% arrange(date) %>% drop_na()
+  W  <- dplyr::n_distinct(d0$date[d0$date <= cutoff])
+  if (W < 12) stop("Not enough rows before cutoff to form a window.")
+  idx_cut <- which(df$date == cutoff); if (!length(idx_cut)) stop("cutoff not found in df$date")
+  i_start <- idx_cut + h
+  n <- nrow(df)
+
+  # causal volatility proxy: rolling mean of |y| using only past data
+  y_all <- df[[target_col]]
+  rv <- rep(NA_real_, n)
+  for (i in seq_len(n)) {
+    j1 <- max(1, i - vol_window); j2 <- i - 1
+    if (j2 >= j1) rv[i] <- mean(abs(y_all[j1:j2]), na.rm = TRUE)
+  }
+
+  # holders
+  yhat_ann <- yhat_rf <- yhat_ens <- rep(NA_real_, n)
+  y_rw0    <- rep(0, n)   # RW(0) baseline for returns
+
+  for (i in seq_len(n)) {
+    tr_end   <- i - h
+    tr_start <- tr_end - W + 1
+    if (tr_start < 1) next
+
+    # Train/Test slices (ensure TRAIN complete)
+    d_tr <- df[tr_start:tr_end, c("date", target_col, predictors), drop = FALSE] %>% drop_na()
+    d_te <- df[i,           c("date", target_col, predictors), drop = FALSE]
+    if (!nrow(d_tr)) next
+    if (any(!complete.cases(d_te))) next
+
+    # ---------- ANN (numeric-only + standardize on TRAIN) ----------
+    num_X <- names(d_tr)[names(d_tr) %in% predictors & sapply(d_tr[, predictors, drop=FALSE], is.numeric)]
+    if (length(num_X) >= 1) {
+      X_tr <- as.matrix(d_tr[, num_X, drop = FALSE])
+      X_te <- as.matrix(d_te[, num_X, drop = FALSE])
+      y_tr <- d_tr[[target_col]]
+
+      std <- standardize_train_test(X_tr, X_te)
+      ann_fit <- nnet(x = std$X_tr_s, y = y_tr,
+                      size = ann_hid, decay = ann_decay,
+                      linout = TRUE, maxit = ann_maxit, trace = FALSE)
+      yhat_ann[i] <- as.numeric(predict(ann_fit, std$X_te_s))
+    }
+
+    # ---------- RF (numeric + factor OK) ----------
+    Xtr_rf <- d_tr[, predictors, drop = FALSE]
+    Xte_rf <- d_te[, predictors, drop = FALSE]
+    # char->factor & align levels
+    for (nm in predictors) {
+      if (is.character(Xtr_rf[[nm]])) Xtr_rf[[nm]] <- as.factor(Xtr_rf[[nm]])
+      if (is.character(Xte_rf[[nm]])) Xte_rf[[nm]] <- as.factor(Xte_rf[[nm]])
+      if (is.factor(Xtr_rf[[nm]])) Xte_rf[[nm]] <- factor(Xte_rf[[nm]], levels = levels(Xtr_rf[[nm]]))
+    }
+    y_tr <- d_tr[[target_col]]
+    nodesize <- max(5L, floor(rf_nodesize_frac * nrow(Xtr_rf)))
+    mtry     <- if (is.null(rf_mtry)) max(1L, floor(sqrt(ncol(Xtr_rf)))) else rf_mtry
+
+    rf_fit <- randomForest(x = Xtr_rf, y = y_tr,
+                           ntree = rf_ntree, mtry = mtry, nodesize = nodesize,
+                           keep.forest = TRUE, importance = FALSE)
+    yhat_rf[i] <- as.numeric(predict(rf_fit, newdata = Xte_rf))
+
+    # ---------- Soft volatility gate (percentile vs training history) ----------
+    rv_hist <- rv[tr_start:tr_end]
+    vol_now <- rv[tr_end + 1]
+    w_rf <- 0
+    if (is.finite(vol_now) && any(is.finite(rv_hist))) {
+      F_hist <- ecdf(rv_hist[is.finite(rv_hist)])
+      p_now  <- F_hist(vol_now)                         # 0..1 percentile
+      # low vol -> w_rf near 0 (favor ANN), high vol -> increase RF weight
+      w_rf <- (p_now - vol_quantile) / (1 - vol_quantile)
+      w_rf <- max(0, min(wmax, w_rf))
+    }
+
+    # Final ensemble: (1 - w_rf) * ANN + w_rf * RF
+    base_ann <- if (is.finite(yhat_ann[i])) yhat_ann[i] else 0
+    if (is.finite(yhat_rf[i])) {
+      yhat_ens[i] <- (1 - w_rf) * base_ann + w_rf * yhat_rf[i]
+    } else {
+      yhat_ens[i] <- base_ann
+    }
+  }
+
+  # ---------- OOS evaluation ----------
+  oos <- df %>%
+    mutate(y = .data[[target_col]],
+           yhat_ann = yhat_ann,
+           yhat_rf  = yhat_rf,
+           yhat_ens = yhat_ens,
+           yhat_rw0 = y_rw0) %>%
+    filter(is.finite(yhat_ann) & is.finite(yhat_rf) & is.finite(yhat_ens))
+
+  e_ann <- oos$y - oos$yhat_ann
+  e_rf  <- oos$y - oos$yhat_rf
+  e_ens <- oos$y - oos$yhat_ens
+  e_rw0 <- oos$y - oos$yhat_rw0
+
+  out <- tibble::tibble(
+    horizon             = paste0(h, "m"),
+    window_W            = W,
+    first_oos_date      = oos$date[1],
+    n_oos               = nrow(oos),
+    RMSE_ANN            = rmse(e_ann),
+    RMSE_RF             = rmse(e_rf),
+    RMSE_ENSEMBLE       = rmse(e_ens),
+    RMSE_RW0            = rmse(e_rw0),
+    R2_OOS_ENS_vs_ANN   = 1 - sum(e_ens^2, na.rm=TRUE) / sum(e_ann^2, na.rm=TRUE),
+    R2_OOS_ENS_vs_RW0   = 1 - sum(e_ens^2, na.rm=TRUE) / sum(e_rw0^2, na.rm=TRUE),
+    DA_ANN              = da(oos$y, oos$yhat_ann, TRUE),
+    DA_RF               = da(oos$y, oos$yhat_rf,  TRUE),
+    DA_ENSEMBLE         = da(oos$y, oos$yhat_ens, TRUE),
+    DA_RW0              = da(oos$y, oos$yhat_rw0, TRUE)
+  )
+  attr(out, "oos") <- oos
+  out
+}
+
+```
+
+
+```{r}
+res1h  <- run_vol_gated_ann_rf(df_1m,  h=1, cutoff=as.Date("2012-12-01"),
+                               predictors = setdiff(names(df_1m), c("date","Y_log_return_1m")),
+                               vol_quantile = 0.70, wmax = 0.80)
+res3h  <- run_vol_gated_ann_rf(df_3m,  h=3, cutoff=as.Date("2012-10-01"),
+                               predictors = setdiff(names(df_3m), c("date","Y_log_return_3m")))
+res6h  <- run_vol_gated_ann_rf(df_6m,  h=6, cutoff=as.Date("2012-07-01"),
+                               predictors = setdiff(names(df_6m), c("date","Y_log_return_6m")))
+res12h <- run_vol_gated_ann_rf(df_12m, h=12, cutoff=as.Date("2012-01-01"),
+                               predictors = setdiff(names(df_12m), c("date","Y_log_return_12m")))
+```
+
+
+```{r}
+res1h
+res3h
+res6h
+res12h
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 

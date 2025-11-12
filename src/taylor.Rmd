@@ -182,8 +182,10 @@ roll_ols_multi <- function(dat_h, h, cutoff_date){
 
     fit <- lm(Y_log_return_1m ~ pi_us + pi_jp + gap_us + gap_jp + i_us_l1 + i_jp_l1,
               data = dat_h[tr_start:tr_end, ])
+    x_i <- dat_h[i - h, , drop = FALSE]
+    yhat_tr[i] <- predict(fit, newdata = x_i)
 
-    yhat_tr[i] <- predict(fit, newdata = dat_h[i, , drop = FALSE])
+    #yhat_tr[i] <- predict(fit, newdata = dat_h[i, , drop = FALSE])
   }
 
   oos <- dat_h %>%
