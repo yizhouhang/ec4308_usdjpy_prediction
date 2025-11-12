@@ -1,0 +1,23 @@
+code,meaning
+monthly_return_lag1,monthly_return_lag1
+TWEXAFEGSMTHx,Trade Weighted USD Index
+x193,Nikkei Commodity PI (42 items)
+x192,Nikkei Commodity PI (17 items)
+x1,IIP (Mining and Manufacturing)
+EXSZUSx,Switzerland / U.S. FX Rate
+x2,IIP (Manufacturing)
+x172,Stock PI (Machinery)
+T10YFFM,10Y Treasury C Minus FEDFUNDS
+x147,Index of Investment Climate (Manufac)
+T5YFFM,5Y Treasury C Minus FEDFUNDS
+BAAFFM,Baa-Fed Funds spread
+x197,Wholesale PI (Intermediate Materials)
+x128,#Beneficiaries of Unemployment Insur
+AAAFFM,Aaa-Fed Funds spread
+x202,Wholesale PI (Non-Durable Consumer G)
+T1YFFM,1Y Treasury C Minus FEDFUNDS
+x208,CPI (Fuel Light and Water Charges)
+x211,CPI (Medical Care)
+x151,"Money Stock (M1, Average Outstanding)"
+x201,Wholesale PI (Durable Consumer Goods)
+DMANEMP,All Employees: Durable goods
