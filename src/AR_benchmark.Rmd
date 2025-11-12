@@ -194,6 +194,10 @@ summary_tbl <- tibble::tibble(
 )
 
 print(summary_tbl)
+
+oos = oos %>% select(date, Y_log_return_3m, yhat_ar1)
+oos
+write_csv(oos, "../data/ar1_3m.csv")
 ```
 
 ### Forecast Horizon = 6m
@@ -273,6 +277,10 @@ summary_tbl <- tibble::tibble(
 )
 
 print(summary_tbl)
+
+oos = oos %>% select(date, Y_log_return_6m, yhat_ar1)
+oos
+write_csv(oos, "../data/ar1_6m.csv")
 ```
 
 ### Forecast Horizon = 12m
@@ -352,6 +360,10 @@ summary_tbl <- tibble::tibble(
 )
 
 print(summary_tbl)
+
+oos = oos %>% select(date, Y_log_return_12m, yhat_ar1)
+oos
+write_csv(oos, "../data/ar1_12m.csv")
 ```
 
 ```{r}
