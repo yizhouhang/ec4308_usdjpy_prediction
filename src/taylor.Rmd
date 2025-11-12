@@ -648,7 +648,78 @@ print(summary_tbl)
 
 
 
+```{r}
+library(readr)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(scales)
 
+d1 <- read_csv("../data/df_1m_lag.csv",  show_col_types = FALSE) %>% select(date, y = Y_log_return_1m)  %>% mutate(h = "1m")
+d3 <- read_csv("../data/df_3m_lag.csv",  show_col_types = FALSE) %>% select(date, y = Y_log_return_3m)  %>% mutate(h = "3m")
+d6 <- read_csv("../data/df_6m_lag.csv",  show_col_types = FALSE) %>% select(date, y = Y_log_return_6m)  %>% mutate(h = "6m")
+d12<- read_csv("../data/df_12m_lag.csv", show_col_types = FALSE) %>% select(date, y = Y_log_return_12m) %>% mutate(h = "12m")
+
+df <- bind_rows(d1, d3, d6, d12) %>%
+  mutate(date = as.Date(date),
+         h = factor(h, levels = c("1m","3m","6m","12m")))
+
+ggplot(df, aes(date, y)) +
+  geom_hline(yintercept = 0, linetype = "dashed", linewidth = 0.3) +
+  geom_line(linewidth = 0.5, na.rm = TRUE) +
+  facet_wrap(~ h, ncol = 1, scales = "free_y") +
+  scale_x_date(labels = label_date_short()) +
+  labs(title = "FX log returns by horizon", x = NULL, y = "Log return") +
+  theme_minimal(base_size = 11) +
+  theme(panel.grid.minor = element_blank())
+
+# overlay in one panel
+ggplot(df, aes(date, y, color = h)) + 
+  geom_hline(yintercept = 0, linetype = "dashed", linewidth = 0.3) +
+  geom_line(linewidth = 0.5, na.rm = TRUE) +
+  scale_x_date(labels = label_date_short()) +
+  labs(title = "FX log returns (1m/3m/6m/12m)", x = NULL, y = "Log return", color = "Horizon") +
+  theme_minimal(base_size = 11) +
+  theme(panel.grid.minor = element_blank())
+
+
+```
+
+```{r}
+library(readr)
+library(dplyr)
+library(ggplot2)
+library(scales)
+library(lubridate)
+
+# Load each horizon, tag with label
+d1  <- read_csv("../data/df_1m_lag.csv",  show_col_types = FALSE) %>% 
+  transmute(date = as.Date(date), y = Y_log_return_1m,  h = "1m")
+d3  <- read_csv("../data/df_3m_lag.csv",  show_col_types = FALSE) %>% 
+  transmute(date = as.Date(date), y = Y_log_return_3m,  h = "3m")
+d6  <- read_csv("../data/df_6m_lag.csv",  show_col_types = FALSE) %>% 
+  transmute(date = as.Date(date), y = Y_log_return_6m,  h = "6m")
+d12 <- read_csv("../data/df_12m_lag.csv", show_col_types = FALSE) %>% 
+  transmute(date = as.Date(date), y = Y_log_return_12m, h = "12m")
+
+# Combine + filter to 2012–2022
+df <- bind_rows(d1, d3, d6, d12) %>%
+  filter(date >= ymd("2013-01-01"), date <= ymd("2022-12-31")) %>%
+  mutate(h = factor(h, levels = c("1m","3m","6m","12m")))
+
+# Plot: 2x2 facet, colored lines (not B/W)
+ggplot(df, aes(date, y, color = h)) +
+  geom_hline(yintercept = 0, linetype = "dashed", linewidth = 0.3) +
+  geom_line(linewidth = 0.6, na.rm = TRUE) +
+  facet_wrap(~ h, ncol = 2, scales = "free_y") +  # 2x2 grid
+  scale_x_date(labels = label_date_short()) +
+  labs(title = "FX log returns (2013–2022)",
+       x = NULL, y = "Log return", color = "Horizon") +
+  theme_minimal(base_size = 12) +
+  theme(panel.grid.minor = element_blank(),
+        legend.position = "none")  # hide legend since facets are labeled
+
+```
 
 
 

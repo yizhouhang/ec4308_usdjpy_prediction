@@ -343,7 +343,7 @@ tab_sign
 out_12m$K_summary
 out_12m$pc_report
 out_12m$top_contrib
-
+pred_cols[25]
 ```
 
 ### fixed train test
