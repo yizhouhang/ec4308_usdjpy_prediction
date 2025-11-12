@@ -1,0 +1,274 @@
+---
+title: "backtest"
+output: html_document
+date: "2025-11-12"
+---
+
+```{r}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+library(dplyr)
+library(slider)
+library(lubridate)
+library(tibble)
+library(purrr)
+library(readr)
+library(leaps)
+library(glmnet)       
+library(forecast)  
+library(ggplot2)
+```
+
+
+```{r}
+setwd("/Users/yizhouhang/Documents/Y4S1/EC4308/ec4308 project/src")
+raw_fred <- read_csv("../data/fred_md_092025.csv", show_col_types = FALSE)
+model_3m <- read_csv("../data/rf_tune_err_3m.csv",show_col_types = FALSE)
+model_1m <- read_csv("../data/ann_err_tbl1.csv",show_col_types = FALSE)
+```
+
+
+```{r}
+usdjpy_rate <- raw_fred %>% 
+  select(sasdate,EXJPUSx)%>%
+  mutate(sasdate = as.Date(sasdate, format = "%m/%d/%Y")) %>%
+  filter(sasdate >= as.Date("2012-01-01"))%>%
+  rename(date = sasdate, USDJPY = EXJPUSx ) 
+
+usdjpy_rate
+```
+
+```{r}
+rates_prepped <- usdjpy_rate%>%
+  filter(date <= as.Date("2023-01-01")) %>% 
+  mutate(actual_returns = log(lead(USDJPY) / USDJPY)) %>%     # r_{t→t+1}
+  filter(!is.na(actual_returns))
+
+rates_prepped
+```
+```{r}
+m1_keep <- model_1m %>%
+  mutate(date = as.Date(date)) %>%
+  select(date, forecast_1m = yhat) %>%
+  arrange(date) %>%
+  distinct(date, .keep_all = TRUE)
+
+m3_keep <- model_3m %>%
+  mutate(Date = as.Date(Date)) %>%
+  select(date = Date, forecast_3m = Forecast) %>%
+  arrange(date) %>%
+  distinct(date, .keep_all = TRUE)
+
+df <- rates_prepped %>%
+  mutate(date = as.Date(date)) %>%
+  left_join(m1_keep, by = "date") %>%
+  left_join(m3_keep, by = "date")
+
+df
+```
+
+
+```{r}
+p_ts <- df %>%
+  filter(!is.na(forecast_1m)) %>%
+  select(date, actual_returns, forecast_1m) %>%
+  tidyr::pivot_longer(cols = c(actual_returns, forecast_1m),
+                      names_to = "series",
+                      values_to = "value") %>%
+  ggplot(aes(x = date, y = value, color = series)) +
+  geom_line(linewidth = 0.6) +
+  scale_color_manual(values = c("actual_returns" = "steelblue",
+                                "forecast_1m"   = "firebrick")) +
+  labs(title = "Actual vs Forecast 1M Log Returns (USD/JPY)",
+       x = NULL, y = "log return",
+       color = NULL,
+       caption = "Blue = actual, Red = forecast") +
+  theme_minimal() +
+  theme(legend.position = "top")
+
+p_ts
+```
+
+### Baseline
+```{r}
+baseline <- df %>%
+  arrange(date) %>%
+  filter(!is.na(forecast_1m))%>%
+  mutate(
+    pnl_log = sign(forecast_1m) * actual_returns, 
+    pnl_log = ifelse(is.na(forecast_1m), 0, pnl_log),
+    cum_log = cumsum(pnl_log),
+    equity  = exp(cum_log)
+  )
+
+
+baseline_blotter <- baseline %>%
+  transmute(
+    date_entry = date,
+    date_exit  = lead(date),
+    spot_entry = USDJPY,
+    spot_exit = lead(USDJPY),
+    predictor = forecast_1m,
+    actual = actual_returns,
+    direction  = ifelse(sign(forecast_1m) > 0, "Long USD/JPY", "Short USD/JPY"),
+    spot_entry, spot_exit, pnl_log,cum_log
+  ) %>%
+  filter(!is.na(date_exit))  
+
+baseline_summary <- list(
+  n_trades       = nrow(baseline_blotter),
+  win_rate       = mean(baseline_blotter$pnl_log > 0, na.rm = TRUE),
+  total_logret   = sum(baseline_blotter$pnl_log, na.rm = TRUE),
+  total_return   = exp(sum(baseline_blotter$pnl_log, na.rm = TRUE)) - 1,
+  avg_trade_log  = mean(baseline_blotter$pnl_log, na.rm = TRUE),
+  median_trade_log = median(baseline_blotter$pnl_log, na.rm = TRUE)
+)
+
+baseline_summary
+baseline_blotter
+
+
+ggplot(
+  baseline %>% filter(date >= as.Date("2013-01-01")),
+  aes(date, exp(cum_log) - 1)
+) +
+  geom_line(color = "steelblue", linewidth = 0.8) +
+  labs(
+    title = "Baseline Strategy: Cumulative Total Return",
+    subtitle = "Long if forecast_1m > 0, Short if forecast_1m < 0 (2013+)",
+    x = NULL,
+    y = "Cumulative Return (as % of initial)"
+  ) +
+  theme_minimal()
+
+```
+
+
+### Backtesting Strategy
+```{r}
+df_bt <- df %>%
+  arrange(date) %>%
+  mutate(
+    med_pos_12m = slide_dbl( #median of positive returns from the prior year
+      .x = lag(actual_returns),                     
+      .f = function(x) {
+        x_pos <- x[is.finite(x) & x > 0]
+        if (length(x_pos) == 0) return(NA_real_)
+        median(x_pos, na.rm = TRUE)
+      },
+      .before   = 11,   # 12 months total
+      .complete = TRUE
+    ),
+    med_neg_12m = slide_dbl( #median of negative returns from the prior year
+      .x = lag(actual_returns),
+      .f = function(x) {
+        x_neg <- x[is.finite(x) & x < 0]
+        if (length(x_neg) == 0) return(NA_real_)
+        median(x_neg, na.rm = TRUE)
+      },
+      .before   = 11,
+      .complete = TRUE
+    )
+  ) %>%
+  # signal rules: 1. Both 1 month and 3 month predictions have same sign 2. Predicted returns greater than/less than the median of positive/negative returns from the past year
+  mutate(
+    sign_agree   = !is.na(forecast_1m) & !is.na(forecast_3m) &
+                   sign(forecast_1m) == sign(forecast_3m),
+    sign_pred1m  = sign(forecast_1m),
+    mag_pass     = case_when(
+      sign_pred1m > 0 ~ !is.na(med_pos_12m) & forecast_1m > med_pos_12m,
+      sign_pred1m < 0 ~ !is.na(med_neg_12m) & forecast_1m < med_neg_12m,
+      TRUE            ~ FALSE
+    ),
+    trade_signal = sign_agree & mag_pass,
+    direction    = case_when(
+      trade_signal & sign_pred1m > 0 ~ "Long USD/JPY",
+      trade_signal & sign_pred1m < 0 ~ "Short USD/JPY",
+      TRUE                           ~ "No trade"
+    )
+  )
+
+df_bt %>%
+  filter(!is.na(forecast_1m)) %>%
+  select(date, forecast_1m, forecast_3m, med_pos_12m, med_neg_12m, trade_signal, direction) 
+
+df_bt %>%
+  filter(!is.na(forecast_1m)) %>%
+  summarize(trades = sum(trade_signal), months = dplyr::n())
+```
+```{r}
+strategy <- df_bt %>%
+  arrange(date) %>%
+  mutate(
+    next_date = lead(date),                      
+    traded    = trade_signal & !is.na(actual_returns) & !is.na(next_date),
+    dir       = ifelse(traded, sign(forecast_1m), 0L),   # +1 long, -1 short, 0 no trade
+
+    # P&L in log-return space:
+    pnl_log = ifelse(traded, dir * actual_returns, 0),
+    cum_log = cumsum(replace_na(pnl_log, 0)),
+    equity  = exp(cum_log)                         
+  )
+
+
+strategy_blotter <- strategy %>%
+  filter(traded) %>%
+  transmute(
+    date_entry = date,
+    date_exit  = next_date,
+    direction  = ifelse(dir > 0, "Long USD/JPY", "Short USD/JPY"),
+    predictor  = forecast_1m,
+    actual     = actual_returns,
+    pnl_log,
+    cum_sum_log = cumsum(pnl_log),
+    cum_equity  = exp(cum_sum_log) - 1
+  )
+
+
+strategy_summary <- list(
+  n_trades          = nrow(strategy_blotter),
+  win_rate          = mean(strategy_blotter$pnl_log > 0, na.rm = TRUE),
+  total_logret      = sum(strategy_blotter$pnl_log, na.rm = TRUE),
+  total_return      = exp(sum(strategy_blotter$pnl_log, na.rm = TRUE)) - 1,
+  avg_trade_log     = mean(strategy_blotter$pnl_log, na.rm = TRUE),
+  median_trade_log  = median(strategy_blotter$pnl_log, na.rm = TRUE)
+)
+
+
+ggplot(
+  strategy %>% filter(date >= as.Date("2013-01-01")),
+  aes(date, equity - 1)
+) +
+  geom_line(color = "firebrick", linewidth = 0.8) +
+  labs(
+    title = "Strategy: Cumulative Total Return",
+    subtitle = "Trade when rule true; 1M hold",
+    x = NULL, y = "Cumulative Return"
+  ) +
+  theme_minimal()
+
+```
+
+
+```{r}
+library(dplyr)
+library(forecast)  # dm.test
+
+# 1M horizon: compare your model vs naive (0 return)
+dm_1m_df <- df %>%
+  arrange(date) %>%
+  filter(!is.na(actual_returns), !is.na(forecast_1m))
+
+e_model_1m <- dm_1m_df$actual_returns - dm_1m_df$forecast_1m
+e_naive_1m <- dm_1m_df$actual_returns - 0  # random-walk (no-change) in log returns
+
+# Squared-error loss (power=2); alternative="less" asks if model has LOWER loss than naive
+dm_1m <- dm.test(e_model_1m, e_naive_1m, h = 1, power = 2, alternative = "less")
+dm_1m
+
+```
+
+
