@@ -1,0 +1,461 @@
+---
+title: "penalised regression"
+output: html_document
+date: "2025-11-09"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(dplyr)
+library(tibble)
+library(purrr)
+library(readr)
+library(leaps)
+library(glmnet)       
+library(forecast)      
+```
+
+```{r}
+setwd("/Users/yizhouhang/Documents/Y4S1/EC4308/ec4308 project/src")
+df_1m  <- read_csv("../data/df_1m_lag.csv",  show_col_types = FALSE)
+df_3m  <- read_csv("../data/df_3m_lag.csv",  show_col_types = FALSE)
+df_6m  <- read_csv("../data/df_6m_lag.csv",  show_col_types = FALSE)
+df_12m <- read_csv("../data/df_12m_lag.csv", show_col_types = FALSE)
+```
+
+```{r}
+df_3m
+```
+
+### Preparing data
+```{r}
+# drop linearly dependent columns using QR on TRAIN only; propagate to TEST
+qr_prune_cols <- function(X_tr, X_te) {
+  qx <- qr(X_tr)
+  keep_idx <- sort(qx$pivot[seq_len(qx$rank)])
+  list(X_tr = X_tr[, keep_idx, drop = FALSE],
+       X_te = X_te[, keep_idx, drop = FALSE],
+       keep_names = colnames(X_tr)[keep_idx])
+}
+
+safe_coef_predict <- function(regfit, X_s, id) {
+  cf <- coef(regfit, id = id)                       
+  mm <- cbind(`(Intercept)` = 1, as.matrix(X_s))
+  miss <- setdiff(names(cf), colnames(mm))
+  if (length(miss)) {
+    add <- matrix(0, nrow = nrow(mm), ncol = length(miss),
+                  dimnames = list(NULL, miss))
+    mm <- cbind(mm, add)
+  }
+  mm <- mm[, names(cf), drop = FALSE]
+  as.numeric(mm %*% cf)
+}
+
+# build X/y; drop date, current_fx_level, fx_level_fwd_*, and y itself
+make_xy <- function(df, y_col, date_col = "date") {
+  stopifnot(y_col %in% names(df), date_col %in% names(df))
+  drop_cols <- c(date_col, "current_fx_level",
+                 grep("^fx_level_fwd", names(df), value = TRUE),
+                 y_col)
+  X <- df %>% select(-all_of(drop_cols)) %>% as.matrix()
+  y <- df[[y_col]]
+  dates <- as.Date(df[[date_col]])
+  list(X = X, y = y, dates = dates)
+}
+
+
+prep_core <- function(X_tr, X_te) {
+  # zero-variance columns (on TRAIN)
+  sds <- apply(X_tr, 2, sd)
+  keep0 <- which(sds > 0)
+  if (length(keep0)) { 
+    X_tr <- X_tr[, keep0, drop = FALSE]
+    X_te <- X_te[, keep0, drop = FALSE]
+  }
+
+  # exact multicollinearity prune (on TRAIN), propagate to TEST
+  pr <- qr_prune_cols(X_tr, X_te); X_tr <- pr$X_tr; X_te <- pr$X_te
+
+  # clean names & scale by TRAIN stats
+  cn <- make.names(colnames(X_tr), unique = TRUE)
+  colnames(X_tr) <- cn; colnames(X_te) <- cn
+
+  mu  <- colMeans(X_tr); sdv <- apply(X_tr, 2, sd)
+  X_tr_s <- scale_with(X_tr, mu, sdv)
+  X_te_s <- scale_with(X_te, mu, sdv)
+
+  list(X_tr_s = X_tr_s, X_te_s = X_te_s, cols = cn)
+}
+
+```
+
+
+### Models
+```{r}
+# 1) OLS
+fit_predict_ols <- function(X_tr_s, y_tr, X_te_s) {
+  df_tr <- data.frame(y = y_tr, as.data.frame(X_tr_s))
+  df_te <- data.frame(as.data.frame(X_te_s))
+  fit   <- lm(y ~ ., data = df_tr)  
+  list(
+    pred_tr = as.numeric(predict(fit, newdata = df_tr)),
+    pred_te = as.numeric(predict(fit, newdata = df_te)),
+    selected = colnames(X_tr_s)
+  )
+}
+
+# 2) Forward stepwise + AIC/BIC 
+fit_predict_subset_forward_ic <- function(X_tr_s, y_tr, X_te_s,
+                                          criterion = c("BIC","AIC"),
+                                          nvmax = 25) {
+  crit <- match.arg(criterion)
+  stopifnot(identical(colnames(X_tr_s), colnames(X_te_s)))
+  n  <- nrow(X_tr_s); p <- ncol(X_tr_s); nv <- min(nvmax, p)
+
+  df_tr  <- data.frame(y = y_tr, as.data.frame(X_tr_s))
+  regfit <- regsubsets(y ~ ., data = df_tr, nvmax = nv, method = "forward")
+  s      <- summary(regfit)
+
+  # choose k by BIC or AIC 
+  k <- if (crit == "BIC") {
+    which.min(s$bic)
+  } else {
+    rss <- s$rss; ks <- 1:nv
+    which.min(n * log(rss / n) + 2 * (ks + 1))
+  }
+
+  pred_tr <- safe_coef_predict(regfit, X_tr_s, k)
+  pred_te <- safe_coef_predict(regfit, X_te_s, k)
+  vars    <- setdiff(names(coef(regfit, id = k)), "(Intercept)")
+  list(pred_tr = pred_tr, pred_te = pred_te, selected = vars, k = k)
+}
+
+# 3) LASSO (BIC on glmnet path) 
+fit_predict_lasso_bic <- function(X_tr_s, y_tr, X_te_s, alpha = 1) {
+  stopifnot(identical(colnames(X_tr_s), colnames(X_te_s)))
+
+  path <- glmnet(X_tr_s, y_tr, alpha = alpha, standardize = FALSE, intercept = TRUE)
+  lam  <- path$lambda
+
+  Ftr <- as.matrix(predict(path, newx = X_tr_s, s = lam, type = "response"))
+  rss <- colSums((y_tr - Ftr)^2)
+  n   <- nrow(X_tr_s)
+
+  bic <- n * log(rss / n) + (path$df + 1) * log(n)
+
+  jstar <- which.min(bic)
+  lam_star <- lam[jstar]
+
+  pred_tr <- as.numeric(Ftr[, jstar])
+  pred_te <- as.numeric(predict(path, newx = X_te_s, s = lam_star, type = "response"))
+
+  cf      <- as.numeric(coef(path, s = lam_star))
+  sel_idx <- which(cf[-1] != 0)
+  sel     <- colnames(X_tr_s)[sel_idx]
+
+  list(pred_tr = pred_tr, pred_te = pred_te, selected = sel, lambda_star = lam_star)
+}
+
+# 4) Post-LASSO (BIC over OLS refits)
+fit_predict_post_lasso_bic <- function(X_tr_s, y_tr, X_te_s, alpha = 1) {
+  stopifnot(identical(colnames(X_tr_s), colnames(X_te_s)))
+
+  path <- glmnet(X_tr_s, y_tr, alpha = alpha, standardize = FALSE, intercept = TRUE)
+  lam  <- path$lambda
+  Bmat <- as.matrix(coef(path, s = lam))[-1, , drop = FALSE]
+
+  n <- nrow(X_tr_s)
+
+  bic_vec   <- rep(NA_real_, length(lam))
+  sel_list  <- vector("list", length(lam))
+  fits_list <- vector("list", length(lam))
+
+  for (j in seq_along(lam)) {
+    idx <- which(Bmat[, j] != 0); sel_list[[j]] <- idx
+    if (!length(idx)) {
+      mu <- mean(y_tr); rss <- sum((y_tr - mu)^2); k <- 1
+      bic_vec[j] <- n * log(rss / n) + k * log(n)
+      fits_list[[j]] <- list(type = "intercept", mu = mu, idx = integer(0))
+    } else {
+      df  <- data.frame(y = y_tr, as.data.frame(X_tr_s[, idx, drop = FALSE]))
+      fit <- lm(y ~ ., data = df)
+      bic_vec[j] <- BIC(fit)
+      fits_list[[j]] <- list(type = "ols", fit = fit, idx = idx)
+    }
+  }
+
+  jstar <- which.min(bic_vec)
+  best  <- fits_list[[jstar]]
+
+  if (best$type == "intercept") {
+    pred_tr <- rep(best$mu, nrow(X_tr_s))
+    pred_te <- rep(best$mu, nrow(X_te_s))
+    selected <- character(0)
+  } else {
+    Xte <- X_te_s[, best$idx, drop = FALSE]
+    dftr <- model.frame(best$fit)
+    pred_tr <- as.numeric(predict(best$fit, newdata = dftr))
+    pred_te <- as.numeric(predict(best$fit, newdata = data.frame(as.data.frame(Xte))))
+    selected <- colnames(X_tr_s)[best$idx]
+  }
+
+  list(pred_tr = pred_tr, pred_te = pred_te, selected = selected,
+       lambda_star = lam[jstar], bic_star = bic_vec[jstar])
+}
+
+# 5) Ridge (BIC) 
+fit_predict_ridge_bic <- function(X_tr_s, y_tr, X_te_s) {
+  stopifnot(identical(colnames(X_tr_s), colnames(X_te_s)))
+
+  path <- glmnet(X_tr_s, y_tr, alpha = 0, standardize = FALSE, intercept = TRUE)
+  lam  <- path$lambda
+  n    <- nrow(X_tr_s)
+
+  Ftr <- as.matrix(predict(path, newx = X_tr_s, s = lam, type = "response"))
+  rss <- colSums((y_tr - Ftr)^2)
+
+  svals  <- svd(X_tr_s, nu = 0, nv = 0)$d
+  df_eff <- vapply(lam, function(l) sum(svals^2 / (svals^2 + n * l)), numeric(1))  # note n*l
+  bic    <- n * log(rss / n) + (1 + df_eff) * log(n)
+
+  jstar <- which.min(bic); lam_star <- lam[jstar]
+
+  pred_tr <- as.numeric(Ftr[, jstar])
+  pred_te <- as.numeric(predict(path, newx = X_te_s, s = lam_star, type = "response"))
+
+  list(pred_tr = pred_tr, pred_te = pred_te, selected = colnames(X_tr_s), lambda_star = lam_star)
+}
+
+# 6) Elastic Net
+fit_predict_en_bic <- function(X_tr_s, y_tr, X_te_s, alpha_grid = c(0.1, 0.5, 0.9)) {
+  stopifnot(identical(colnames(X_tr_s), colnames(X_te_s)))
+  best <- list(bic = Inf)
+  n <- nrow(X_tr_s)
+
+  for (a in alpha_grid) {
+    path <- glmnet::glmnet(X_tr_s, y_tr, alpha = a, standardize = FALSE, intercept = TRUE)
+    lam  <- path$lambda
+    Ftr  <- as.matrix(predict(path, newx = X_tr_s, s = lam, type = "response"))
+    rss  <- colSums((y_tr - Ftr)^2)
+    bic  <- n * log(rss / n) + (path$df + 1) * log(n)   # df ≈ nonzeros + intercept
+    j    <- which.min(bic)
+    if (bic[j] < best$bic) best <- list(bic = bic[j], alpha = a, lam = lam[j], path = path)
+  }
+
+  pred_tr <- as.numeric(predict(best$path, newx = X_tr_s, s = best$lam, type = "response"))
+  pred_te <- as.numeric(predict(best$path, newx = X_te_s, s = best$lam, type = "response"))
+  cf      <- as.numeric(coef(best$path, s = best$lam))
+  sel     <- colnames(X_tr_s)[which(cf[-1] != 0)]
+
+  list(pred_tr = pred_tr, pred_te = pred_te, selected = sel,
+       alpha_star = best$alpha, lambda_star = best$lam)
+}
+```
+
+### Helpers
+```{r}
+rmse <- function(p, t) sqrt(mean((t - p)^2))
+
+dir_acc <- function(y, p) {
+  sy <- sign(y); sp <- sign(p)
+  hits <- sum(sy == sp); n <- length(y)
+  list(da = hits / n,
+       n  = n,
+       pval = as.numeric(stats::binom.test(hits, n, p = 0.5)$p.value))
+}
+
+metric_row <- function(model, y_te, p_te, y_tr = NULL, p_tr = NULL) {
+  data.frame(
+    model     = model,
+    rmse_te   = rmse(p_te, y_te),
+    da_te     = dir_acc(y_te, p_te)$da,
+    da_n      = dir_acc(y_te, p_te)$n,
+    da_pval   = dir_acc(y_te, p_te)$pval,
+    stringsAsFactors = FALSE
+  )
+}
+
+```
+
+
+### Evaluation
+```{r}
+evaluate_rolling <- function(df, y_col, split_date = "2013-01-01",
+                             h = 1,              
+                             nvmax = 25, verbose_every = 10,
+                             en_alpha_grid = 0.5) {
+
+  cat(sprintf("\n========== Rolling window @ %s for %s (h=%d months) ==========\n",
+              split_date, y_col, h))
+
+  xy <- make_xy(df, y_col)
+  ord <- order(as.Date(xy$dates))
+  X <- xy$X[ord, , drop = FALSE]
+  y <- xy$y[ord]
+  dates <- as.Date(xy$dates[ord])
+
+  # Define training and testing indices
+  split_cut <- as.Date(split_date) - months(h)
+  train_idx <- which(dates <= split_cut)
+  test_idx  <- which(dates >= as.Date(split_date))
+
+  n_train0 <- length(train_idx)
+  n_test   <- length(test_idx)
+  stopifnot(n_train0 > 0, n_train0 < length(y))
+
+  cat(sprintf("Rolling window: train_width=%d, test=%d steps\n",
+              n_train0, n_test))
+
+  # Define models
+  model_fns <- list(
+    "OLS"             = \(Xtr,ytr,Xts) fit_predict_ols(Xtr,ytr,Xts),
+    "Subset-BIC"      = \(Xtr,ytr,Xts) fit_predict_subset_forward_ic(Xtr,ytr,Xts,"BIC",nvmax),
+    "Subset-AIC"      = \(Xtr,ytr,Xts) fit_predict_subset_forward_ic(Xtr,ytr,Xts,"AIC",nvmax),
+    "LASSO(BIC)"      = \(Xtr,ytr,Xts) fit_predict_lasso_bic(Xtr,ytr,Xts),
+    "Post-LASSO"      = \(Xtr,ytr,Xts) fit_predict_post_lasso_bic(Xtr,ytr,Xts),
+    "Ridge(BIC)"      = \(Xtr,ytr,Xts) fit_predict_ridge_bic(Xtr,ytr,Xts),
+    "ElasticNet(BIC)" = \(Xtr,ytr,Xts) fit_predict_en_bic(Xtr,ytr,Xts, alpha_grid = en_alpha_grid)
+  )
+  model_names <- names(model_fns)
+
+  pred_mat <- matrix(NA_real_, nrow = n_test, ncol = length(model_names),
+                     dimnames = list(NULL, model_names))
+  y_te <- numeric(n_test)
+
+  # Rolling loop
+  for (t in seq_len(n_test)) {
+    if (t %% verbose_every == 1 || t == n_test)
+      cat(sprintf("  [Rolling] step %d / %d\n", t, n_test))
+
+    idx_te <- test_idx[t]
+    idx_tr <- seq.int(idx_te - n_train0, idx_te - 1L)
+    idx_tr <- idx_tr[idx_tr >= 1]
+
+    y_te[t] <- y[idx_te]
+    X_tr <- X[idx_tr, , drop = FALSE]
+    y_tr <- y[idx_tr]
+    X_ts <- X[idx_te, , drop = FALSE]
+
+    pc <- prep_core(X_tr, X_ts)
+    X_tr_s <- pc$X_tr_s
+    X_ts_s <- pc$X_te_s
+
+    for (m in model_names) {
+      res <- try(model_fns[[m]](X_tr_s, y_tr, X_ts_s), silent = TRUE)
+      pred_mat[t, m] <- if (inherits(res, "try-error")) NA_real_ else res$pred_te
+    }
+  }
+
+  # Compute metrics
+  y_pred <- as.data.frame(pred_mat)
+  metrics <- do.call(rbind, lapply(names(y_pred), function(m) {
+    da <- dir_acc(y_te, y_pred[[m]])
+    data.frame(
+      model   = m,
+      rmse_te = rmse(y_pred[[m]], y_te),
+      da_te   = da$da, da_n = da$n, da_pval = da$pval,
+      stringsAsFactors = FALSE
+    )
+  }))
+
+  list(metrics = metrics, preds = y_pred, y_te = y_te,
+       meta = list(n_train0 = n_train0, n_test = n_test, h = h))
+}
+
+
+```
+
+```{r}
+res1m <- evaluate_rolling (df_1m, "Y_log_return_1m", split_date = "2013-01-01",
+                             nvmax = 25, verbose_every = 20,
+                             en_alpha_grid = 0.5) 
+  
+```
+```{r}
+res1m$metrics
+```
+
+```{r}
+res3m$metrics
+
+```
+
+```{r}
+res6m$metrics
+```
+
+```{r}
+names(res1m)
+
+```
+
+
+```{r}
+res3m <- evaluate_rolling (df_3m, "Y_log_return_3m", split_date = "2013-01-01",
+                           h=3,
+                             nvmax = 25, verbose_every = 20,
+                             en_alpha_grid = 0.5) 
+```
+
+```{r}
+res6m <- evaluate_rolling  (df_6m, "Y_log_return_6m", split_date = "2013-01-01",h=6,
+                             nvmax = 25, verbose_every = 20,
+                             en_alpha_grid = 0.5) 
+```
+
+```{r}
+res12m <- evaluate_rolling (df_12m, "Y_log_return_12m", split_date = "2013-01-01",h=12,
+                             nvmax = 25, verbose_every = 20,
+                             en_alpha_grid = 0.5) 
+```
+```{r}
+res12m$metrics
+```
+
+### print out variables selcted by subset selection
+```{r}
+y_col      <- "Y_log_return_3m"          # change if needed
+split_date <- "2013-01-01"
+nvmax      <- 25
+verbose_every <- 10
+
+xy <- make_xy(df_3m, y_col) #change accordingly
+ord <- order(xy$dates)
+X <- xy$X[ord, , drop = FALSE]
+y <- xy$y[ord]
+d <- as.Date(xy$dates[ord])
+
+n_train0 <- sum(d < as.Date(split_date))
+stopifnot(n_train0 > 0, n_train0 < length(y))
+n_test <- length(y) - n_train0
+
+for (t in seq_len(n_test)) {
+
+  idx_tr <- t:(t + n_train0 - 1L)
+  idx_te <- t + n_train0
+
+  pc <- prep_core(X[idx_tr, , drop = FALSE], X[idx_te, , drop = FALSE])
+
+  bic <- fit_predict_subset_forward_ic(pc$X_tr_s, y[idx_tr], pc$X_te_s, "BIC", nvmax)
+  aic <- fit_predict_subset_forward_ic(pc$X_tr_s, y[idx_tr], pc$X_te_s, "AIC", nvmax)
+
+  cat(sprintf("[t=%d][BIC] k=%d | %s\n", t, bic$k, paste(bic$selected, collapse=", ")))
+  cat(sprintf("[t=%d][AIC] k=%d | %s\n", t, aic$k, paste(aic$selected, collapse=", ")))
+}
+
+sel_bic <- list(); sel_aic <- list()
+for (t in seq_len(n_test)) {
+  idx_tr <- t:(t + n_train0 - 1L)
+  idx_te <- t + n_train0
+  pc <- prep_core(X[idx_tr, , drop = FALSE], X[idx_te, , drop = FALSE])
+  sel_bic[[t]] <- fit_predict_subset_forward_ic(pc$X_tr_s, y[idx_tr], pc$X_te_s, "BIC", nvmax)$selected
+  sel_aic[[t]] <- fit_predict_subset_forward_ic(pc$X_tr_s, y[idx_tr], pc$X_te_s, "AIC", nvmax)$selected
+}
+sort(table(unlist(sel_bic)), decreasing = TRUE)[1:20]  # top 20 by BIC
+sort(table(unlist(sel_aic)), decreasing = TRUE)[1:20]  # top 20 by AIC
+
+```
+
