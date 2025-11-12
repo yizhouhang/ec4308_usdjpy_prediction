@@ -15,8 +15,9 @@ library(tidyr)
 
 
 ```{r}
-load("/Users/judy/Desktop/EC4308/ec4308_usdjpy_result/rf_rolling_results.RData")
-load("/Users/judy/Desktop/EC4308/ec4308_usdjpy_result/rf_tune_rolling_results.RData")
+# setwd("/Users/judy/Desktop/EC4308/ec4308_usdjpy_prediction/src")
+load("../model/rf_rolling_results.RData")
+load("../model/rf_tune_rolling_results.RData")
 
 importance_list_1m <- results_list$pred1m$importance_history
 importance_list_3m <- results_list_rf_roll$pred3m$importance_history
@@ -92,7 +93,7 @@ ggplot(top_vars, aes(x = `%IncMSE`,
 ```
 
 ```{r}
-setwd("/Users/judy/Desktop/EC4308/ec4308_usdjpy_prediction/src")
+# setwd("/Users/judy/Desktop/EC4308/ec4308_usdjpy_prediction/src")
 ann_1m <- read.csv("../data/ann_err_tbl1.csv")
 ann_1m$rw_forecast <- dplyr::lag(ann_1m$y)
 ann_1m$date <- as.Date(ann_1m$date, format = "%Y-%m-%d")

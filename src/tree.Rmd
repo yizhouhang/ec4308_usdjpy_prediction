@@ -17,7 +17,7 @@ library(gbm)           # boosting
 
 ```{r load datasets}
 # getwd()
-setwd("/Users/judy/Desktop/EC4308/ec4308_usdjpy_prediction/src")
+# setwd("/Users/judy/Desktop/EC4308/ec4308_usdjpy_prediction/src")
 
 # read datasets (different horizons)
 pred1m = read.csv("../data/df_1m_lag.csv")
@@ -178,19 +178,19 @@ for (d in c("pred1m", "pred3m", "pred6m", "pred12m")) {
   res <- rolling_rf_rmse(data=df, data_name=d)
   results_list[[d]] <- res
 }
-save(results_list_rf_roll, file = "/Users/judy/Desktop/EC4308/ec4308_usdjpy_result/rf_rolling_results.RData")
+# save(results_list_rf_roll, file = "/Users/judy/Desktop/EC4308/ec4308_usdjpy_result/rf_rolling_results.RData")
 
 roll_rf_1m <- results_list$pred1m$results
 roll_rf_1m$error <- roll_rf_1m$Actual - roll_rf_1m$Forecast
-write.csv(roll_rf_1m, file = "/Users/judy/Desktop/rf_err_1m.csv", row.names = FALSE)
+# write.csv(roll_rf_1m, file = "/Users/judy/Desktop/rf_err_1m.csv", row.names = FALSE)
 
 roll_rf_6m <- results_list$pred6m$results
 roll_rf_6m$error <- roll_rf_6m$Actual - roll_rf_6m$Forecast
-write.csv(roll_rf_6m, file = "/Users/judy/Desktop/rf_err_6m.csv", row.names = FALSE)
+# write.csv(roll_rf_6m, file = "/Users/judy/Desktop/rf_err_6m.csv", row.names = FALSE)
 
 roll_rf_12m <- results_list$pred12m$results
 roll_rf_12m$error <- roll_rf_12m$Actual - roll_rf_12m$Forecast
-write.csv(roll_rf_12m, file = "/Users/judy/Desktop/rf_err_12m.csv", row.names = FALSE)
+# write.csv(roll_rf_12m, file = "/Users/judy/Desktop/rf_err_12m.csv", row.names = FALSE)
 
 results_list_rf_roll <- list()
 #"pred1m", "pred6m", "pred12m"
@@ -200,11 +200,11 @@ for (d in c("pred1m", "pred3m", "pred6m", "pred12m")) {
   results_list_rf_roll[[d]] <- res
 }
 
-save(results_list_rf_roll, file = "/Users/judy/Desktop/EC4308/ec4308_usdjpy_result/rf_tune_rolling_results.RData")
+#save(results_list_rf_roll, file = "/Users/judy/Desktop/EC4308/ec4308_usdjpy_result/rf_tune_rolling_results.RData")
 
 roll_rf_tune_3m <- results_list_rf_roll$pred3m$results
 roll_rf_tune_3m$error <- roll_rf_tune_3m$Actual - roll_rf_tune_3m$Forecast
-write.csv(roll_rf_tune_3m, file = "/Users/judy/Desktop/rf_tune_err_3m.csv", row.names = FALSE)
+#write.csv(roll_rf_tune_3m, file = "/Users/judy/Desktop/rf_tune_err_3m.csv", row.names = FALSE)
 
 # load("/Users/judy/Desktop/EC4308/ec4308_usdjpy_result/rf_tune_rolling_results.RData")
 
@@ -347,7 +347,7 @@ for (d in c("pred1m", "pred1m", "pred6m", "pred12m")) {
   results_list_bag_roll[[d]] <- res
 }
 
-save(results_list_bag_roll, file = "/Users/judy/Desktop/EC4308/ec4308_usdjpy_result/bag_rolling_results_all.RData")
+#save(results_list_bag_roll, file = "/Users/judy/Desktop/EC4308/ec4308_usdjpy_result/bag_rolling_results_all.RData")
 
 # load("../model/bag_rolling_results_all.RData")
 
@@ -448,18 +448,18 @@ for (d in c("pred1m", "pred1m", "pred6m", "pred12m")) {
   results_list_boost_roll[[d]] <- res 
   }
 
-save(results_list_boost_roll, file = "/Users/judy/Desktop/EC4308/ec4308_usdjpy_result/boost_rolling_results_all.RData")
+#save(results_list_boost_roll, file = "/Users/judy/Desktop/EC4308/ec4308_usdjpy_result/boost_rolling_results_all.RData")
 
 # load("/Users/judy/Desktop/EC4308/ec4308_usdjpy_result/boost_rolling_results_all.RData")
 
 
 roll_boost_6m <- results_list_boost_roll$pred6m$results
 roll_boost_6m$error <- roll_boost_6m$Actual - roll_boost_6m$Forecast
-write.csv(roll_boost_6m, file = "/Users/judy/Desktop/boost_err_6m.csv", row.names = FALSE)
+#write.csv(roll_boost_6m, file = "/Users/judy/Desktop/boost_err_6m.csv", row.names = FALSE)
 
 roll_boost_12m <- results_list_boost_roll$pred12m$results
 roll_boost_12m$error <- roll_boost_12m$Actual - roll_boost_12m$Forecast
-write.csv(roll_boost_12m, file = "/Users/judy/Desktop/boost_err_12m.csv", row.names = FALSE)
+#write.csv(roll_boost_12m, file = "/Users/judy/Desktop/boost_err_12m.csv", row.names = FALSE)
 
 ```
 

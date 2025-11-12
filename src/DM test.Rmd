@@ -16,7 +16,7 @@ library(sandwich) #library to estimate variance for DM test regression using New
 ```{r}
 ########### 1m: ANN vs AR1 ###########
 # squared loss for different methods
-setwd("/Users/judy/Desktop/EC4308/ec4308_usdjpy_prediction/src")
+#setwd("/Users/judy/Desktop/EC4308/ec4308_usdjpy_prediction/src")
 ar1_1m <- read.csv("../data/ar1_err_tbl1.csv")
 ar1_1m_rmse <- ar1_1m$error^2
 ann_1m <- read.csv("../data/ann_err_tbl1.csv")
@@ -40,7 +40,7 @@ dm1m$coefficients/sqrt(NeweyWest(dm1m,lag=4)) #form the DM t-statistic
 ```{r}
 ########### 3m: RF(tune) vs ANN ###########
 # squared loss for different methods
-setwd("/Users/judy/Desktop/EC4308/ec4308_usdjpy_prediction/src")
+#setwd("/Users/judy/Desktop/EC4308/ec4308_usdjpy_prediction/src")
 rf_3m <- read.csv("../data/rf_tune_err_3m.csv")
 rf_3m_rmse <- rf_3m$error^2
 ann_3m <- read.csv("../data/ann_err_tbl3.csv")
@@ -64,7 +64,7 @@ dm3m$coefficients/sqrt(NeweyWest(dm3m,lag=8)) #form the DM t-statistic
 ```{r}
 ########### 6m: RF(default) vs Boosting ###########
 # squared loss for different methods
-setwd("/Users/judy/Desktop/EC4308/ec4308_usdjpy_prediction/src")
+#setwd("/Users/judy/Desktop/EC4308/ec4308_usdjpy_prediction/src")
 rf_6m <- read.csv("../data/rf_err_6m.csv")
 rf_6m_rmse <- rf_6m$error^2
 boost_6m <- read.csv("../data/boost_err_6m.csv")
@@ -88,7 +88,7 @@ dm6m$coefficients/sqrt(NeweyWest(dm6m,lag=6)) #form the DM t-statistic
 ```{r}
 ########### 12m: RF(default) vs Boosting ###########
 # squared loss for different methods
-setwd("/Users/judy/Desktop/EC4308/ec4308_usdjpy_prediction/src")
+# setwd("/Users/judy/Desktop/EC4308/ec4308_usdjpy_prediction/src")
 rf_12m <- read.csv("../data/rf_err_12m.csv")
 rf_12m_rmse <- rf_12m$error^2
 boost_12m <- read.csv("../data/boost_err_12m.csv")
