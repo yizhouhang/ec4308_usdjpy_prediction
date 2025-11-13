@@ -14,27 +14,36 @@ library(sandwich) #library to estimate variance for DM test regression using New
 ```
 
 ```{r}
-########### 1m: ANN vs AR1 ###########
+########### 1m: ANN vs AR1 vs RW ###########
 # squared loss for different methods
 #setwd("/Users/judy/Desktop/EC4308/ec4308_usdjpy_prediction/src")
 ar1_1m <- read.csv("../data/ar1_err_tbl1.csv")
 ar1_1m_rmse <- ar1_1m$error^2
 ann_1m <- read.csv("../data/ann_err_tbl1.csv")
 ann_1m_rmse <- ann_1m$error^2
+rw_1m_rmse <- (ann_1m$y - 0)^2
 
 # loss differentials for different horizons
 ld_1m <- ann_1m_rmse - ar1_1m_rmse
+ld_rw_1m <- ann_1m_rmse - rw_1m_rmse
 
 #Create ts object containing loss differentials
 rmse_differential=ts(ld_1m, start=c(2013,1,1), end=c(2022,12,1), freq=12)
 #Plot them to examine stationarity:
 plot.ts(rmse_differential, main="Loss differential ANN vs AR1 - 1m",cex.axis=1.8)
-
 #DM regressions
 dm1m=lm(ld_1m~1) #regression
 acf(dm1m$residuals) #check serial correlation of residuals - number of significant autocorrelations is a good guess for number lags included in the HAC variance estimator
-dm1m$coefficients/sqrt(NeweyWest(dm1m,lag=4)) #form the DM t-statistic
+dm_ts_1m <- dm1m$coefficients/sqrt(NeweyWest(dm1m,lag=4)) #form the DM t-statistic
 # DM t-statistic = 0.04543917
+p_value_dm1m <- 2 * (1 - pnorm(abs(dm_ts_1m)))
+
+rmse_differential=ts(ld_rw_1m, start=c(2013,1,1), end=c(2022,12,1), freq=12)
+plot.ts(rmse_differential, main="Loss differential ANN vs RW - 1m",cex.axis=1.8)
+dm1m=lm(ld_rw_1m~1)
+acf(dm1m$residuals)
+dm1m$coefficients/sqrt(NeweyWest(dm1m,lag=5)) # -1.529016
+2 * (1 - pnorm(abs(-1.529016))) # 0.1262605
 ```
 
 ```{r}
@@ -45,9 +54,11 @@ rf_3m <- read.csv("../data/rf_tune_err_3m.csv")
 rf_3m_rmse <- rf_3m$error^2
 ann_3m <- read.csv("../data/ann_err_tbl3.csv")
 ann_3m_rmse <- ann_3m$error^2
+rw_3m_rmse <- (rf_3m$Actual - 0)^2
 
 # loss differentials for different horizons
 ld_3m <- rf_3m_rmse - ann_3m_rmse
+ld_rw_3m <- rf_3m_rmse - rw_3m_rmse
 
 #Create ts object containing loss differentials
 rmse_differential_3m <- ts(ld_3m, start=c(2013,1,1), end=c(2022,12,1), freq=12)
@@ -57,8 +68,17 @@ plot.ts(rmse_differential_3m, main="Loss differential RF(tune) vs ANN - 3m",cex.
 #DM regressions
 dm3m=lm(ld_3m~1) #regression
 acf(dm3m$residuals) #check serial correlation of residuals - number of significant autocorrelations is a good guess for number lags included in the HAC variance estimator
-dm3m$coefficients/sqrt(NeweyWest(dm3m,lag=8)) #form the DM t-statistic
+dm_ts_3m <- dm3m$coefficients/sqrt(NeweyWest(dm3m,lag=8)) #form the DM t-statistic
 # DM t-statistic = 0.01987463
+p_value_dm3m <- 2 * (1 - pnorm(abs(dm_ts_3m)))
+# 0.9841434
+
+rmse_differential=ts(ld_rw_3m, start=c(2013,1,1), end=c(2022,12,1), freq=12)
+plot.ts(rmse_differential, main="Loss differential RF vs RW - 3m",cex.axis=1.8)
+dm=lm(ld_rw_3m~1)
+acf(dm$residuals)
+dm$coefficients/sqrt(NeweyWest(dm,lag=7)) # -0.8159127
+2 * (1 - pnorm(abs(-0.8159127))) # 0.4145501
 ```
 
 ```{r}
@@ -69,9 +89,11 @@ rf_6m <- read.csv("../data/rf_err_6m.csv")
 rf_6m_rmse <- rf_6m$error^2
 boost_6m <- read.csv("../data/boost_err_6m.csv")
 boost_6m_rmse <- boost_6m$error^2
+rw_6m_rmse <- (rf_6m$Actual - 0)^2
 
 # loss differentials for different horizons
 ld_6m <- rf_6m_rmse - boost_6m_rmse
+ld_rw_6m <- rf_6m_rmse - rw_6m_rmse
 
 #Create ts object containing loss differentials
 rmse_differential_6m <- ts(ld_6m, start=c(2013,1,1), end=c(2022,12,1), freq=12)
@@ -81,8 +103,17 @@ plot.ts(rmse_differential_6m, main="Loss differential RF(default) vs Boosting - 
 #DM regressions
 dm6m=lm(ld_6m~1) #regression
 acf(dm6m$residuals) #check serial correlation of residuals - number of significant autocorrelations is a good guess for number lags included in the HAC variance estimator
-dm6m$coefficients/sqrt(NeweyWest(dm6m,lag=6)) #form the DM t-statistic
+dm_ts_6m <- dm6m$coefficients/sqrt(NeweyWest(dm6m,lag=6)) #form the DM t-statistic
 # DM t-statistic = -1.763961
+p_value_dm6m <- 2 * (1 - pnorm(abs(dm_ts_6m)))
+# 0.07773855
+
+rmse_differential=ts(ld_rw_6m, start=c(2013,1,1), end=c(2022,12,1), freq=12)
+plot.ts(rmse_differential, main="Loss differential RF vs RW - 3m",cex.axis=1.8)
+dm=lm(ld_rw_6m~1)
+acf(dm$residuals)
+dm$coefficients/sqrt(NeweyWest(dm,lag=6)) # -0.898539
+2 * (1 - pnorm(abs(-0.898539))) # 0.3688983
 ```
 
 ```{r}
@@ -93,9 +124,11 @@ rf_12m <- read.csv("../data/rf_err_12m.csv")
 rf_12m_rmse <- rf_12m$error^2
 boost_12m <- read.csv("../data/boost_err_12m.csv")
 boost_12m_rmse <- boost_12m$error^2
+rw_12m_rmse <- (rf_12m$Actual - 0)^2
 
 # loss differentials for different horizons
 ld_12m <- rf_12m_rmse - boost_12m_rmse
+ld_rw_12m <- rf_12m_rmse - rw_12m_rmse
 
 #Create ts object containing loss differentials
 rmse_differential_12m <- ts(ld_12m, start=c(2013,1,1), end=c(2022,12,1), freq=12)
@@ -105,6 +138,14 @@ plot.ts(rmse_differential_12m, main="Loss differential RF(default) vs Boosting -
 #DM regressions
 dm12m=lm(ld_12m~1) #regression
 acf(dm12m$residuals) #check serial correlation of residuals - number of significant autocorrelations is a good guess for number lags included in the HAC variance estimator
-dm12m$coefficients/sqrt(NeweyWest(dm12m,lag=2)) #form the DM t-statistic
+dm_ts_12m <- dm12m$coefficients/sqrt(NeweyWest(dm12m,lag=2)) #form the DM t-statistic
 # DM t-statistic = -3.313246
+p_value_dm12m <- 2 * (1 - pnorm(abs(dm_ts_12m)))
+
+rmse_differential=ts(ld_rw_12m, start=c(2013,1,1), end=c(2022,12,1), freq=12)
+plot.ts(rmse_differential, main="Loss differential RF vs RW - 3m",cex.axis=1.8)
+dm=lm(ld_rw_12m~1)
+acf(dm$residuals)
+dm$coefficients/sqrt(NeweyWest(dm,lag=5)) # -0.8919172
+2 * (1 - pnorm(abs(-0.8919172))) # 0.3724373
 ```

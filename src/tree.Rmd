@@ -48,39 +48,39 @@ rolling_rf_rmse <- function(data, data_name, nprev = 120, y_col = 4) {
   importance_list <- vector("list", nprev)
   
   
-  #### tune mtry
-  # cat("Tuning mtry using the first training window...\n")
-  # X_tune <- X_all[1:(n - nprev), , drop = FALSE]
-  # y_tune <- y_all[1:(n - nprev)]
-  # 
-  # pdf(NULL)  # prevent any plotting device issues
-  # tune_res <- tuneRF(
-  #   x = X_tune, y = y_tune,
-  #   mtryStart = floor(sqrt(ncol(X_tune))),
-  #   stepFactor = 2,
-  #   improve = 0.05,
-  #   nodesize = 5,
-  #   ntreeTry = 5000,
-  #   doBest = TRUE,
-  #   trace = FALSE,
-  #   plot = FALSE
-  # )
-  # dev.off()
-  # 
-  # if (is.data.frame(tune_res) || is.matrix(tune_res)) {
-  #   best_mtry <- tune_res[which.min(tune_res[, 2]), 1]
-  # } else if (is.numeric(tune_res)) {
-  #   best_mtry <- tune_res[1]
-  # } else if (is.list(tune_res) && "bestmtry" %in% names(tune_res)) {
-  #   best_mtry <- tune_res$bestmtry
-  # } else {
-  #   best_mtry <- floor(sqrt(ncol(X_tune)))
-  #   cat("tuneRF returned unexpected structure — using default mtry =", best_mtry, "\n")
-  # }
-  # cat("Best mtry selected:", best_mtry, "\n\n")
-  # 
-  # 
-  # cat("Rolling forecasts for", data_name, "started... total =", nprev, "steps\n")
+  ### tune mtry
+  cat("Tuning mtry using the first training window...\n")
+  X_tune <- X_all[1:(n - nprev), , drop = FALSE]
+  y_tune <- y_all[1:(n - nprev)]
+
+  pdf(NULL)  # prevent any plotting device issues
+  tune_res <- tuneRF(
+    x = X_tune, y = y_tune,
+    mtryStart = floor(sqrt(ncol(X_tune))),
+    stepFactor = 2,
+    improve = 0.05,
+    nodesize = 5,
+    ntreeTry = 5000,
+    doBest = TRUE,
+    trace = FALSE,
+    plot = FALSE
+  )
+  dev.off()
+
+  if (is.data.frame(tune_res) || is.matrix(tune_res)) {
+    best_mtry <- tune_res[which.min(tune_res[, 2]), 1]
+  } else if (is.numeric(tune_res)) {
+    best_mtry <- tune_res[1]
+  } else if (is.list(tune_res) && "bestmtry" %in% names(tune_res)) {
+    best_mtry <- tune_res$bestmtry
+  } else {
+    best_mtry <- floor(sqrt(ncol(X_tune)))
+    cat("tuneRF returned unexpected structure — using default mtry =", best_mtry, "\n")
+  }
+  cat("Best mtry selected:", best_mtry, "\n\n")
+
+
+  cat("Rolling forecasts for", data_name, "started... total =", nprev, "steps\n")
 
   for (i in nprev:1) {
     # define rolling window
@@ -131,45 +131,6 @@ rolling_rf_rmse <- function(data, data_name, nprev = 120, y_col = 4) {
 
 ```
 
-### combine all variable importances
-```{r}
-# combine all variable importances into one table
-aggregate_importance <- function(importance_list) {
-  # convert each importance matrix into a data frame with variable names
-  imp_dfs <- lapply(importance_list, function(x) {
-    df <- as.data.frame(x)
-    df$Variable <- rownames(x)
-    rownames(df) <- NULL
-    df
-  })
-  
-  # stack all data frames together
-  imp_all <- do.call(rbind, imp_dfs)
-  
-  # aggregate by variable name (average across rolling windows)
-  imp_summary <- aggregate(. ~ Variable, data = imp_all, FUN = mean, na.rm = TRUE)
-  
-  # sort by average %IncMSE (most important first)
-  imp_summary <- imp_summary[order(-imp_summary$`%IncMSE`), ]
-  
-  return(imp_summary)
-  
-
-}
-
-```
-
-```{r}
-# rolling-window forecasts at different horizons
-rf_1m_roll <- rolling_rf_rmse(data=pred1m)
-rf_1m_roll_importance <- aggregate_importance(rf_1m_roll$importance_history)
-rf_1m_roll <- rolling_rf_rmse(data=pred1m)
-rf_1m_roll_importance <- aggregate_importance(rf_1m_roll$importance_history)
-rf_6m_roll <- rolling_rf_rmse(data=pred6m)
-rf_6m_roll_importance <- aggregate_importance(rf_6m_roll$importance_history)
-rf_12m_roll <- rolling_rf_rmse(data=pred12m)
-rf_12m_roll_importance <- aggregate_importance(rf_12m_roll$importance_history)
-```
 
 ### Save rf rolling results
 ```{r}
@@ -326,17 +287,6 @@ rolling_bag_rmse <- function(data, data_name, nprev = 120, y_col = 4) {
 }
 ```
 
-```{r}
-bag_1m_roll <- rolling_bag_rmse(data=pred1m)
-bag_1m_roll_importance <- aggregate_importance(bag_1m_roll$importance_history)
-bag_1m_roll <- rolling_bag_rmse(data=pred1m)
-bag_1m_roll_importance <- aggregate_importance(bag_1m_roll$importance_history)
-bag_6m_roll <- rolling_bag_rmse(data=pred6m)
-bag_6m_roll_importance <- aggregate_importance(bag_6m_roll$importance_history)
-bag_12m_roll <- rolling_bag_rmse(data=pred12m)
-bag_12m_roll_importance <- aggregate_importance(bag_12m_roll$importance_history)
-```
-
 ### Save bag rolling results
 ```{r}
 results_list_bag_roll <- list()
@@ -462,23 +412,6 @@ roll_boost_12m$error <- roll_boost_12m$Actual - roll_boost_12m$Forecast
 #write.csv(roll_boost_12m, file = "/Users/judy/Desktop/boost_err_12m.csv", row.names = FALSE)
 
 ```
-
-
-# All tree-based models
-```{r}
-# random forest train/test
-load("rf_train_test_results_all.RData")
-
-# random forest rolling window
-load("../model/rf_rolling_results_all.RData")
-
-# bagging forest train/
-load("bag_train_test_results_all.RData")
-
-# bagging forest rolling window
-load("../model/bag_rolling_results_all.RData")
-```
-
 
 
 

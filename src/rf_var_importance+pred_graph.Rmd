@@ -95,19 +95,23 @@ ggplot(top_vars, aes(x = `%IncMSE`,
 ```{r}
 # setwd("/Users/judy/Desktop/EC4308/ec4308_usdjpy_prediction/src")
 ann_1m <- read.csv("../data/ann_err_tbl1.csv")
-ann_1m$rw_forecast <- dplyr::lag(ann_1m$y)
+ar1_1m <- read.csv("../data/ar1_err_tbl1.csv")
+ann_1m$ar1_forecast <- ar1_1m$yhat_ar1
 ann_1m$date <- as.Date(ann_1m$date, format = "%Y-%m-%d")
 
 rf_3m <- read.csv("../data/rf_tune_err_3m.csv")
-rf_3m$rw_forecast <- dplyr::lag(rf_3m$Actual)
+ar1_3m <- read.csv("../data/ar1_3m.csv")
+rf_3m$ar1_forecast <- ar1_3m$yhat_ar1
 rf_3m$Date <- as.Date(rf_3m$Date, format = "%Y-%m-%d")
 
 rf_6m <- read.csv("../data/rf_err_6m.csv")
-rf_6m$rw_forecast <- dplyr::lag(rf_6m$Actual)
+ar1_6m <- read.csv("../data/ar1_6m.csv")
+rf_6m$ar1_forecast <- ar1_6m$yhat_ar1
 rf_6m$Date <- as.Date(rf_6m$Date, format = "%Y-%m-%d")
 
 rf_12m <- read.csv("../data/rf_err_12m.csv")
-rf_12m$rw_forecast <- dplyr::lag(rf_12m$Actual)
+ar1_12m <- read.csv("../data/ar1_12m.csv")
+rf_12m$ar1_forecast <- ar1_12m$yhat_ar1
 rf_12m$Date <- as.Date(rf_12m$Date, format = "%Y-%m-%d")
 
 ```
@@ -115,13 +119,13 @@ rf_12m$Date <- as.Date(rf_12m$Date, format = "%Y-%m-%d")
 ```{r}
 ggplot(ann_1m, aes(x = date)) +
   geom_line(aes(y = y, color = "Actual Return"), size = 0.7) +
-  geom_line(aes(y = yhat, color = "Best Model Return"), size = 0.7) +
-  geom_line(aes(y = rw_forecast, color = "Random Walk Return"), size = 0.5, linetype = "dashed") +
+  geom_line(aes(y = yhat, color = "ANN Return"), size = 0.7) +
+  geom_line(aes(y = ar1_forecast, color = "AR1 Return"), size = 0.7) +
   scale_color_manual(
     values = c(
       "Actual Return" = "royalblue3",    
-      "Best Model Return" = "red3",  
-      "Random Walk Return" = "grey29"  
+      "ANN Return" = "red3",  
+      "AR1 Return" = "black"  
     )
   ) +
   scale_x_date(
@@ -129,7 +133,7 @@ ggplot(ann_1m, aes(x = date)) +
     labels = date_format("%Y")
   ) +
   labs(
-    title = "Actual vs Predicted vs Random Walk Log Returns (1 Month)",
+    title = "Actual vs Predicted vs AR1 Log Returns (1 Month)",
     x = "Time",
     y = "Log Return",
     color = ""
@@ -145,13 +149,13 @@ ggplot(ann_1m, aes(x = date)) +
 ```{r}
 ggplot(rf_3m, aes(x = Date)) +
   geom_line(aes(y = Actual, color = "Actual Return"), size = 0.7) +
-  geom_line(aes(y = Forecast, color = "Best Model Return"), size = 0.7) +
-  geom_line(aes(y = rw_forecast, color = "Random Walk Return"), size = 0.5, linetype = "dashed") +
+  geom_line(aes(y = Forecast, color = "RF Return"), size = 0.7) +
+  geom_line(aes(y = ar1_forecast, color = "AR1 Return"), size = 0.7) +
   scale_color_manual(
     values = c(
       "Actual Return" = "royalblue3",    
-      "Best Model Return" = "red3",  
-      "Random Walk Return" = "grey29"  
+      "RF Return" = "red3",  
+      "AR1 Return" = "black"  
     )
   ) +
   scale_x_date(
@@ -159,7 +163,7 @@ ggplot(rf_3m, aes(x = Date)) +
     labels = date_format("%Y")
   ) +
   labs(
-    title = "Actual vs Predicted vs Random Walk Log Returns (3 Month)",
+    title = "Actual vs Predicted vs AR1 Log Returns (3 Month)",
     x = "Time",
     y = "Log Return",
     color = ""
@@ -175,13 +179,13 @@ ggplot(rf_3m, aes(x = Date)) +
 ```{r}
 ggplot(rf_6m, aes(x = Date)) +
   geom_line(aes(y = Actual, color = "Actual Return"), size = 0.7) +
-  geom_line(aes(y = Forecast, color = "Best Model Return"), size = 0.7) +
-  geom_line(aes(y = rw_forecast, color = "Random Walk Return"), size = 0.5, linetype = "dashed") +
+  geom_line(aes(y = Forecast, color = "RF Return"), size = 0.7) +
+  geom_line(aes(y = ar1_forecast, color = "AR1 Return"), size = 0.7) +
   scale_color_manual(
     values = c(
       "Actual Return" = "royalblue3",    
-      "Best Model Return" = "red3",  
-      "Random Walk Return" = "grey29"  
+      "RF Return" = "red3",  
+      "AR1 Return" = "black"  
     )
   ) +
   scale_x_date(
@@ -189,7 +193,7 @@ ggplot(rf_6m, aes(x = Date)) +
     labels = date_format("%Y")
   ) +
   labs(
-    title = "Actual vs Predicted vs Random Walk Log Returns (6 Month)",
+    title = "Actual vs Predicted vs AR1 Log Returns (6 Month)",
     x = "Time",
     y = "Log Return",
     color = ""
@@ -205,13 +209,13 @@ ggplot(rf_6m, aes(x = Date)) +
 ```{r}
 ggplot(rf_12m, aes(x = Date)) +
   geom_line(aes(y = Actual, color = "Actual Return"), size = 0.7) +
-  geom_line(aes(y = Forecast, color = "Best Model Return"), size = 0.7) +
-  geom_line(aes(y = rw_forecast, color = "Random Walk Return"), size = 0.5, linetype = "dashed") +
+  geom_line(aes(y = Forecast, color = "RF Return"), size = 0.7) +
+  geom_line(aes(y = ar1_forecast, color = "AR1 Return"), size = 0.7) +
   scale_color_manual(
     values = c(
       "Actual Return" = "royalblue3",    
-      "Best Model Return" = "red3",  
-      "Random Walk Return" = "grey29"  
+      "RF Return" = "red3",  
+      "AR1 Return" = "black"  
     )
   ) +
   scale_x_date(
@@ -219,7 +223,7 @@ ggplot(rf_12m, aes(x = Date)) +
     labels = date_format("%Y")
   ) +
   labs(
-    title = "Actual vs Predicted vs Random Walk Log Returns (12 Month)",
+    title = "Actual vs Predicted vs AR1 Log Returns (12 Month)",
     x = "Time",
     y = "Log Return",
     color = ""
