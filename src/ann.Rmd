@@ -16,8 +16,6 @@ suppressPackageStartupMessages({
 })
 
 set.seed(42)
-
-# ---- helpers ----
 standardize_train_test <- function(X_tr, X_te) {
   mu  <- apply(X_tr, 2, mean)
   sdv <- apply(X_tr, 2, sd)
@@ -34,20 +32,6 @@ da   <- function(y, yhat, drop_zero = TRUE) {
   mean(sy[ok] == sf[ok])
 }
 
-# =============================================================================
-# Horizon-aware rolling ANN (walk-forward)
-# df           : time-ordered data.frame with 'date' (Date), targets, predictors
-# h            : horizon in {1,3,6,12}
-# target_col   : OPTIONAL; by default uses paste0("Y_log_return_", h, "m")
-# lag1_col     : OPTIONAL; used only for AR(1) baseline. If NULL:
-#                  - tries paste0("monthly_return_lag", h)
-#                  - else falls back to "monthly_return_lag1" if present
-# predictors   : OPTIONAL character vector; by default uses ALL columns except date & target
-# cutoff       : initial window endpoint (same meaning as your setup)
-# ann_hid/decay/maxit : nnet hyperparams
-# use_rw_drift : if TRUE, RW baseline uses rolling mean; else zero (RW0)
-# returns      : summary tibble + invisibly attaches oos preds if you want to keep them
-# =============================================================================
 run_rolling_ann_h <- function(df, h = 3,
                               target_col = NULL,
                               lag1_col = NULL,

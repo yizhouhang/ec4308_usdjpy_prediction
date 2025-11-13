@@ -401,6 +401,7 @@ res12 <- run_rolling_ann_rf_ens(df_12m, h=12, cutoff=as.Date("2012-01-01"), meth
 dplyr::bind_rows(res1, res3, res6, res12)
 ```
 
+ANN + RF Residual
 ```{r}
 suppressPackageStartupMessages({
   library(dplyr)
@@ -562,6 +563,7 @@ res6h
 res12h
 ```
 
+ANN + RF Volatility
 
 ```{r}
 suppressPackageStartupMessages({
